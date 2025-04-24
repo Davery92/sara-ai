@@ -9,9 +9,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"  
+
       - name: Install test deps
         run: pip install -r services/gateway/requirements.txt
-        
+
       - name: Run pytest
         run: pytest -q
 

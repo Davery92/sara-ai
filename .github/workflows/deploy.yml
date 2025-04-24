@@ -14,30 +14,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-
-      - name: Deploy to Infra VM
+      - name: SSH & Deploy to Infra VM
         uses: appleboy/ssh-action@v1.0.0
         with:
           host: 10.185.1.76
           username: david
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
-            # 1) Generate .env at the project root (one level above `compose/`)
+            set -e
+
+            # 1) Generate the .env at VM /opt/sara-ai
             cd /opt/sara-ai
-            cat << 'EOF' > .env
+            cat <<EOF > .env
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-
             NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
-
             MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
             MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
-
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
-            cp .env compose/ .env
-            # 2) Start your compose stack
+
+            # 2) Copy it where Compose expects
+            cp .env compose/.env
+
+            # 3) Tear down & rebuild the stack
             cd compose
+            docker compose -f core.yml down -v
             docker compose -f core.yml pull
             docker compose -f core.yml up -d

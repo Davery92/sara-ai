@@ -1,0 +1,11 @@
+- name: Deploy to Anubis
+  uses: appleboy/ssh-action@v1.0.0
+  with:
+    host: 10.185.1.76            # ← your static IP
+    username: david
+    key: ${{ secrets.INFRA_SSH_KEY }}
+    script: |
+      cd /opt/sara-ai/compose
+      docker compose pull
+      docker compose up -d
+

@@ -1,0 +1,41 @@
+---
+- name: Prepare infra host
+  hosts: anubis
+  become: yes
+
+  tasks:
+    - name: Remove conflicting packages
+      apt:
+        name:
+          - docker.io
+          - containerd
+          - containerd.io
+        state: absent
+        purge: yes
+        autoremove: yes
+
+    - name: Install Docker using the official script
+      shell: |
+        curl -fsSL https://get.docker.com | sh
+
+    - name: Enable BuildKit
+      copy:
+        dest: /etc/docker/daemon.json
+        content: |
+          {
+            "experimental": true,
+            "features": { "buildkit": true }
+          }
+
+    - name: Restart Docker
+      systemd:
+        name: docker
+        state: restarted
+        enabled: yes
+
+    - name: Add user to docker group
+      user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+

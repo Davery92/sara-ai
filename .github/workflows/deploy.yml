@@ -2,18 +2,17 @@ name: Deploy to Infra VM
 
 on:
   push:
-    branches:
-      - main
+    branches: [ main ]
 
 jobs:
   deploy:
-    name: Deploy to Anubis
     runs-on: self-hosted
-
     steps:
+      # 1) checkout just so we can copy code via SSH
       - name: Checkout code
         uses: actions/checkout@v3
 
+      # 2) SSH into the VM and run EVERYTHING there
       - name: SSH & Deploy to Infra VM
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -21,11 +20,12 @@ jobs:
           username: david
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
-            set -euo pipefail
+            set -euxo pipefail
 
-            # 1) Write .env at /opt/sara-ai
             cd /opt/sara-ai
-            cat <<EOF > .env
+
+            # generate the .env on the VM
+            cat > .env <<EOF
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
             POSTGRES_DB=${{ secrets.POSTGRES_DB }}
@@ -35,11 +35,11 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # 2) Ensure compose sees it
-            cd compose
-            cp ../.env .env
+            # copy it where Compose will pick it up
+            cp .env compose/.env
 
-            # 3) Tear down & rebuild your stack on the VM
+            # run Compose only on the VM
+            cd compose
             docker compose -f core.yml down -v
             docker compose -f core.yml pull
             docker compose -f core.yml up -d --wait

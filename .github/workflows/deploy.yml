@@ -36,8 +36,8 @@ jobs:
 
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
-
+            cp .env compose/ .env
             # 2) Start your compose stack
             cd compose
-            docker compose pull
-            docker compose up -d
+            docker compose -f core.yml pull
+            docker compose -f core.yml up -d

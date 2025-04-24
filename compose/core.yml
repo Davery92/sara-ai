@@ -1,16 +1,16 @@
-version: "3.9"
+# compose/core.yml
+version: "3.9"               # optional – Docker 25 ignores it
 
-x-common-env: &common-env
+x-env: &common-env
   TZ: America/New_York
-  PUID: 1000          # ubuntu
+  PUID: 1000                 # ubuntu
   PGID: 1000
 
 services:
   redis:
     image: redis:7.2-alpine
     command: ["redis-server", "--appendonly", "yes"]
-    environment:
-      <<: *common-env
+    environment: *common-env
     volumes:
       - redis-data:/data
     networks: [ backend ]
@@ -22,7 +22,7 @@ services:
 
   nats:
     image: nats:2.10-alpine
-    command: ["-js", "-m", "8222"]           # JetStream + monitoring
+    command: ["-js", "-m", "8222"]                 # JetStream + monitor UI
     environment: *common-env
     networks: [ backend ]
     healthcheck:
@@ -47,19 +47,18 @@ services:
       timeout: 5s
       retries: 5
 
-  # lightweight canary container used by CI to prove the stack came up
+  # Pre-built tiny image that runs scripts/health_check.py
   healthcheck:
-    image: python:3.12-alpine
+    build:
+      context: ..                                 # repo root (one up from compose/)
+      dockerfile: services/healthcheck/Dockerfile
     depends_on:
-      redis:   
-        condition: service_healthy 
-      nats:    
+      redis:
         condition: service_healthy
-      postgres: 
+      nats:
         condition: service_healthy
-    command: ["python", "-u", "/opt/health_check.py"]
-    volumes:
-      - ../scripts/health_check.py:/opt/health_check.py:ro
+      postgres:
+        condition: service_healthy
     networks: [ backend ]
 
 volumes:

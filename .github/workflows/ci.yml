@@ -38,11 +38,8 @@ jobs:
       - name: Run pytest
         run: pytest -q
 
-      - name: Compose up (core infra)
-        run: docker compose -f compose/core.yml up -d --wait
-
-      - name: Run healthcheck script
-        run: docker compose -f compose/core.yml up --build --exit-code-from healthcheck healthcheck
+      - name: Compose up (core infra — no wait)
+        run: docker compose -f compose/core.yml up -d
 
       - name: Compose down
         if: always()

@@ -21,11 +21,10 @@ jobs:
           username: david
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
-            set -e
+            set -euo pipefail
 
+            # 1) Write .env at /opt/sara-ai
             cd /opt/sara-ai
-
-            # 1) Generate a fresh .env from your GitHub Secrets
             cat <<EOF > .env
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
@@ -36,11 +35,11 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # 2) Copy it into the compose folder where core.yml lives
-            cp .env compose/.env
-
-            # 3) Tear down, pull updates, and bring the stack back up
+            # 2) Ensure compose sees it
             cd compose
+            cp ../.env .env
+
+            # 3) Tear down & rebuild your stack on the VM
             docker compose -f core.yml down -v
             docker compose -f core.yml pull
             docker compose -f core.yml up -d --wait

@@ -1,12 +1,11 @@
-# compose/core.yml
-version: "3.9"               # optional – Docker 25 ignores it
 
 x-env: &common-env
   TZ: America/New_York
-  PUID: 1000                 # ubuntu
+  PUID: 1000
   PGID: 1000
 
 services:
+  # ─────────────────────────────── Redis ───────────────────────────────
   redis:
     image: redis:7.2-alpine
     command: ["redis-server", "--appendonly", "yes"]
@@ -20,9 +19,10 @@ services:
       timeout: 3s
       retries: 5
 
+  # ─────────────────────────────── NATS ───────────────────────────────
   nats:
     image: nats:2.10-alpine
-    command: ["-js", "-m", "8222"]                 # JetStream + monitor UI
+    command: ["-js", "-m", "8222"]
     environment: *common-env
     networks: [ backend ]
     healthcheck:
@@ -31,36 +31,203 @@ services:
       timeout: 3s
       retries: 5
 
+  # ────────────────────────── PostgreSQL + pgvector ──────────────────────────
   postgres:
-    image: postgres:16-alpine
+    image: ankane/pgvector       # includes the vector extension
+    container_name: sara_postgres
+    restart: unless-stopped
+    env_file:
+      - ../.env
     environment:
       <<: *common-env
-      POSTGRES_USER: sara
-      POSTGRES_PASSWORD: sara_pw
-      POSTGRES_DB: sara
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
     volumes:
       - pg-data:/var/lib/postgresql/data
     networks: [ backend ]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U sara"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
       interval: 10s
       timeout: 5s
       retries: 5
 
-  # Pre-built tiny image that runs scripts/health_check.py
+  # ─────────────────────────────── Neo4j 5 ───────────────────────────────
+   
+  neo4j:
+    image: neo4j:5
+    container_name: sara_neo4j
+    restart: unless-stopped
+    environment:
+      <<: *common-env
+      # the only two vars Neo4j really needs:
+      NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"
+      NEO4J_dbms_default__listen__address: "0.0.0.0"
+    volumes:
+      - neo4j-data:/data
+    ports:
+      - "7474:7474"    # HTTP UI
+      - "7687:7687"    # Bolt
+    networks: [ backend ]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # ─────────────────────────────── MinIO ───────────────────────────────
+  minio:
+    image: minio/minio
+    container_name: sara_minio
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      <<: *common-env
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
+    command: server /data
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9000:9000"
+    networks: [ backend ]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:9000/minio/health/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ────────────────────────── Temporal (all-in-one) ──────────────────────────
+  temporal:
+    image: temporalio/auto-setup:1.22
+    container_name: sara_temporal
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      <<: *common-env
+      # Tell Temporal to use Postgres (not Cassandra)
+      DB: "postgres"
+      DB_PORT: "5432"
+      # Point Temporal at your Postgres service
+      POSTGRES_SEEDS: "postgres"
+      # Postgres creds (pulled from ../.env via env_file)
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PWD: "${POSTGRES_PASSWORD}"
+    volumes:
+      - temporal-data:/data
+    ports:
+      - "7233:7233"
+    networks: [ backend ]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7233/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # ─────────────────────────── Traefik edge router ───────────────────────────
+  traefik:
+    image: traefik:latest
+    container_name: sara_traefik
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      <<: *common-env
+    command:
+      - --providers.docker=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL}
+      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - letsencrypt:/letsencrypt
+    networks: [ backend ]
+    # (optional) enable dashboard if you like:
+    # labels:
+    #   - "traefik.http.routers.traefik.rule=Host(`traefik.yourdomain.com`)"
+    #   - "traefik.http.routers.traefik.service=api@internal"
+
+  # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:
     build:
-      context: ..                                 # repo root (one up from compose/)
+      context: ..
       dockerfile: services/healthcheck/Dockerfile
-    environment: 
-      - ENV=prod 
+    env_file:
+      - ../.env
+    environment:
+      <<: *common-env
+
+      # Redis
+      REDIS_HOST:       "redis"
+      REDIS_PORT:       "6379"
+
+      # NATS
+      NATS_HOST:        "nats"
+      NATS_PORT:        "4222"
+
+      # PostgreSQL
+      POSTGRES_HOST:    "postgres"
+      POSTGRES_PORT:    "5432"
+      POSTGRES_DB:      "${POSTGRES_DB}"
+      POSTGRES_USER:    "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      # also for psycopg2’s PG* env vars
+      PGHOST:           "postgres"
+      PGPORT:           "5432"
+      PGDATABASE:       "${POSTGRES_DB}"
+      PGUSER:           "${POSTGRES_USER}"
+      PGPASSWORD:       "${POSTGRES_PASSWORD}"
+
+      # Neo4j
+      NEO4J_HOST:       "neo4j"
+      NEO4J_PORT:       "7474"
+      NEO4J_USER:       "neo4j"
+      NEO4J_PASSWORD:   "${NEO4J_PASSWORD}"
+
+      # MinIO
+      MINIO_HOST:       "minio"
+      MINIO_PORT:       "9000"
+      MINIO_ROOT_USER:      "${MINIO_ROOT_USER}"
+      MINIO_ROOT_PASSWORD:  "${MINIO_ROOT_PASSWORD}"
+
+      # Temporal
+      TEMPORAL_HOST:    "temporal"
+      TEMPORAL_PORT:    "7233"
+
     depends_on:
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
+      redis:    { condition: service_healthy }
+      nats:     { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      neo4j:    { condition: service_healthy }
+      minio:    { condition: service_healthy }
+      temporal: { condition: service_healthy }
+
+    networks: [ backend ]
+
+
+
+
+  # ─────────────────────────────── Gateway API ───────────────────────────────
+  gateway:
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile
+    env_file:
+      - ../.env
+    environment:
+      <<: *common-env
+      ENV: prod
+    depends_on:
+      redis: { condition: service_healthy }
     networks: [ backend ]
     ports:
       - "8000:8000"
@@ -68,8 +235,11 @@ services:
 volumes:
   redis-data:
   pg-data:
+  neo4j-data:
+  minio-data:
+  temporal-data:
+  letsencrypt:
 
 networks:
   backend:
     driver: bridge
-

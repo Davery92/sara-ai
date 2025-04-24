@@ -51,7 +51,7 @@ services:
   healthcheck:
     build:
       context: ..                                 # repo root (one up from compose/)
-      dockerfile: services/gateway/Dockerfile
+      dockerfile: services/healthcheck/Dockerfile
     environment: 
       - ENV=prod 
     depends_on:

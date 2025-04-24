@@ -15,7 +15,10 @@ jobs:
           python-version: "3.12"  
 
       - name: Install test deps
-        run: pip install -r services/gateway/requirements.txt
+        run: |
+          python -m pip install --no-cache-dir -r services/gateway/requirements.txt
+          python -m pip install --no-cache-dir -e services/gateway 
+        
 
       - name: Run pytest
         run: pytest -q

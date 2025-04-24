@@ -1,4 +1,4 @@
-- name: Deploy to Anubis
+- name: Deploy to Infra VM
   uses: appleboy/ssh-action@v1.0.0
   with:
     host: 10.185.1.76            # ← your static IP

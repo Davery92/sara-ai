@@ -13,7 +13,7 @@ jobs:
         run: docker compose -f compose/core.yml up -d --wait
 
       - name: Run health script
-        run: docker compose -f compose/core.yml up --exit-code-from healthcheck healthcheck
+        run: docker compose -f compose/core.yml up --build  --exit-code-from healthcheck healthcheck
 
       - name: Compose down
         if: always()

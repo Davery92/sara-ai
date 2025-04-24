@@ -23,7 +23,7 @@ ok("Postgres")
 async def nats_ping():
     nc = NATS()
     await nc.connect("nats://nats:4222", connect_timeout=1)
-    await nc.flush()
+    await nc.flush()          # round-trip with server
     await nc.close()
 
 asyncio.run(nats_ping())

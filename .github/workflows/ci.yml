@@ -1,0 +1,21 @@
+name: build-test
+
+on: [push, pull_request]
+
+jobs:
+  compose-test:
+    runs-on: self-hosted
+    services: {}          # we bring our own in the step
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compose up (core infra)
+        run: docker compose -f compose/core.yml up -d --wait
+
+      - name: Run health script
+        run: docker compose -f compose/core.yml up --exit-code-from healthcheck healthcheck
+
+      - name: Compose down
+        if: always()
+        run: docker compose -f compose/core.yml down -v
+

@@ -14,14 +14,30 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
+
       - name: Deploy to Infra VM
         uses: appleboy/ssh-action@v1.0.0
         with:
-          host: 10.185.1.76              # ✅ use your actual VM IP here
-          username: david                # ✅ use the actual user (not "ubuntu" if it doesn’t exist)
+          host: 10.185.1.76
+          username: david
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
-            cd /opt/sara-ai/compose
+            # 1) Generate .env at the project root (one level above `compose/`)
+            cd /opt/sara-ai
+            cat << 'EOF' > .env
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+
+            NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
+
+            MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
+            MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
+
+            LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
+            EOF
+
+            # 2) Start your compose stack
+            cd compose
             docker compose pull
             docker compose up -d
-

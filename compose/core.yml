@@ -74,6 +74,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period: 60s
 
 
   # ─────────────────────────────── MinIO ───────────────────────────────
@@ -98,6 +99,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period:30s
 
   # ────────────────────────── Temporal (all-in-one) ──────────────────────────
   temporal:
@@ -126,6 +128,7 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+      start_period:90s
 
 
   # ─────────────────────────── Traefik edge router ───────────────────────────

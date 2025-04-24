@@ -9,6 +9,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install test deps
+        run: pip install -r services/gateway/requirements.txt
+        
+      - name: Run pytest
+        run: pytest -q
+
       - name: Compose up (core infra)
         run: docker compose -f compose/core.yml up -d --wait
 

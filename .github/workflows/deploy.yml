@@ -7,12 +7,11 @@ on:
 jobs:
   deploy:
     runs-on: self-hosted
+
     steps:
-      # 1) checkout just so we can copy code via SSH
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2) SSH into the VM and run EVERYTHING there
       - name: SSH & Deploy to Infra VM
         uses: appleboy/ssh-action@v1.0.0
         with:
@@ -20,11 +19,10 @@ jobs:
           username: david
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
-            set -euxo pipefail
+            set -euo pipefail
 
+            # 1) Generate .env on the VM
             cd /opt/sara-ai
-
-            # generate the .env on the VM
             cat > .env <<EOF
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
@@ -35,11 +33,11 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # copy it where Compose will pick it up
+            # 2) Copy it where core.yml expects
             cp .env compose/.env
 
-            # run Compose only on the VM
+            # 3) Tear down & rebuild, but don't wait on healthchecks
             cd compose
             docker compose -f core.yml down -v
             docker compose -f core.yml pull
-            docker compose -f core.yml up -d --wait
+            docker compose -f core.yml up -d

@@ -1,7 +1,7 @@
 import pytest
 from httpx import AsyncClient
-from app.main import app
-from services.gateway.auth import login, verify, refresh
+from services.gateway.app.main import app
+from services.gateway.app.auth import login, verify, refresh
 from fastapi.testclient import TestClient
 from services.gateway.main import app
 

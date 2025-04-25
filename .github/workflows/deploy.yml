@@ -33,10 +33,10 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # 2) Copy it where core.yml expects
+            # 2) Copy it where Compose expects
             cp .env compose/.env
 
-            # 3) Tear down & rebuild, but don't wait on healthchecks
+            # 3) Tear down, pull, and bring up the stack in detached mode
             cd compose
             docker compose -f core.yml down -v
             docker compose -f core.yml pull

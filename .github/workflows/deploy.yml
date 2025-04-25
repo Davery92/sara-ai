@@ -23,7 +23,7 @@ jobs:
 
             cd /opt/sara-ai
 
-            # Regenerate .env
+            # 1) Regenerate .env
             cat > .env <<EOF
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
@@ -34,18 +34,16 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # copy for Compose
+            # 2) Copy into compose dir
             cp .env compose/.env
 
             cd compose
 
-            # tear down everything
+            # 3) Tear down & pull fresh images
             docker compose -f core.yml down -v
-
-            # pull new images
             docker compose -f core.yml pull
 
-            # bring up only the primary services (no healthcheck orchestrator)
+            # 4) Bring up ONLY the core services (no healthcheck orchestrator)
             docker compose -f core.yml up -d \
               redis \
               nats \
@@ -55,3 +53,5 @@ jobs:
               temporal \
               traefik \
               gateway
+
+            # (If you ever need that healthcheck container, you can `docker compose up -d healthcheck` later)

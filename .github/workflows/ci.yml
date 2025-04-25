@@ -1,16 +1,11 @@
 name: build-test
 
-on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
+on: [push, pull_request]
 
 jobs:
-  test:
+  compose-test:
     runs-on: self-hosted
     services: {}          # we bring our own in the steps
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -20,22 +15,17 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Gateway & Proxy test deps
+      - name: Install gateway dependencies
         run: |
-          python -m pip install --upgrade pip
-
-          # Gateway
           python -m pip install --no-cache-dir -r services/gateway/requirements.txt
           python -m pip install --no-cache-dir -e services/gateway
 
-          # LLM Proxy (if you have a requirements file)
-          if [ -f services/llm_proxy/requirements.txt ]; then
-            python -m pip install --no-cache-dir -r services/llm_proxy/requirements.txt
-          fi
+      - name: Install llm_proxy dependencies
+        run: |
+          python -m pip install --no-cache-dir -r services/llm_proxy/requirements.txt
           python -m pip install --no-cache-dir -e services/llm_proxy
-
-          # Bring in the websockets runtime so httpx.AsyncClient.websocket_connect works
-          python -m pip install --no-cache-dir websockets
+          # bring in WebSocket support for httpx AsyncClient
+          python -m pip install websockets
 
       - name: Create .env for Compose
         run: |
@@ -52,8 +42,11 @@ jobs:
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
 
-      - name: Run tests
-        run: pytest -q services/gateway/tests services/llm_proxy/tests
+      - name: Run gateway tests
+        run: pytest -q services/gateway/tests
+
+      - name: Run llm_proxy tests
+        run: pytest -q services/llm_proxy/tests
 
       - name: Compose up (core infra — no wait)
         run: docker compose -f compose/core.yml up -d

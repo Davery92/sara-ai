@@ -22,18 +22,17 @@ jobs:
 
       - name: Create .env for Compose
         run: |
-          cat <<EOF > .env
+          # Option 1: flush to the left
+          cat > compose/.env <<EOF
           POSTGRES_USER=${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-
           NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
-
           MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
-
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
+
 
       - name: Run pytest
         run: pytest -q

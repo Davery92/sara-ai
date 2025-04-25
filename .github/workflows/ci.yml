@@ -24,6 +24,8 @@ jobs:
         run: |
           python -m pip install --no-cache-dir -r services/llm_proxy/requirements.txt
           python -m pip install --no-cache-dir -e services/llm_proxy
+          # bring in WebSocket support for httpx AsyncClient
+          python -m pip install websockets
 
       - name: Create .env for Compose
         run: |

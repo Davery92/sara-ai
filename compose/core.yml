@@ -237,6 +237,18 @@ services:
     ports:
       - "8000:8000"
 
+  llm_proxy:
+    build: ../services/llm_proxy
+    env_file: [ ../.env ]
+    environment:
+      <<: *common-env
+      OLLAMA_URL: "http://100.104.68.115:11434"   # dev target
+    networks: [ backend ]
+    depends_on:
+      nats: { condition: service_healthy }
+    ports:
+    - "8001:8000" 
+
 volumes:
   redis-data:
   pg-data:

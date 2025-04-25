@@ -15,10 +15,15 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install test dependencies
+      - name: Install gateway dependencies
         run: |
           python -m pip install --no-cache-dir -r services/gateway/requirements.txt
           python -m pip install --no-cache-dir -e services/gateway
+
+      - name: Install llm_proxy dependencies
+        run: |
+          python -m pip install --no-cache-dir -r services/llm_proxy/requirements.txt
+          python -m pip install --no-cache-dir -e services/llm_proxy
 
       - name: Create .env for Compose
         run: |
@@ -35,8 +40,11 @@ jobs:
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
 
-      - name: Run pytest
-        run: pytest -q
+      - name: Run gateway tests
+        run: pytest -q services/gateway/tests
+
+      - name: Run llm_proxy tests
+        run: pytest -q services/llm_proxy/tests
 
       - name: Compose up (core infra — no wait)
         run: docker compose -f compose/core.yml up -d

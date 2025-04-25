@@ -21,8 +21,9 @@ jobs:
           script: |
             set -euo pipefail
 
-            # 1) Generate .env on the VM
             cd /opt/sara-ai
+
+            # Regenerate .env
             cat > .env <<EOF
             POSTGRES_USER=${{ secrets.POSTGRES_USER }}
             POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
@@ -33,11 +34,24 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # 2) Copy it where Compose expects
+            # copy for Compose
             cp .env compose/.env
 
-            # 3) Tear down, pull, and bring up the stack in detached mode
             cd compose
+
+            # tear down everything
             docker compose -f core.yml down -v
+
+            # pull new images
             docker compose -f core.yml pull
-            docker compose -f core.yml up -d
+
+            # bring up only the primary services (no healthcheck orchestrator)
+            docker compose -f core.yml up -d \
+              redis \
+              nats \
+              postgres \
+              neo4j \
+              minio \
+              temporal \
+              traefik \
+              gateway

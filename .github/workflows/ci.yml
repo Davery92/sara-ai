@@ -5,42 +5,31 @@ on: [push, pull_request]
 jobs:
   compose-test:
     runs-on: self-hosted
-    services: {}          # we bring our own in the steps
+    services: {}          # we bring our own in the step
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: "3.12"
+          python-version: "3.12"  
 
-      - name: Install test dependencies
+      - name: Install test deps
         run: |
           python -m pip install --no-cache-dir -r services/gateway/requirements.txt
-          python -m pip install --no-cache-dir -e services/gateway
-
-      - name: Create .env for Compose
-        run: |
-          cat <<EOF > .env
-          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-
-          NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
-
-          MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
-          MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
-
-          LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
-          EOF
+          python -m pip install --no-cache-dir -e services/gateway 
+        
 
       - name: Run pytest
         run: pytest -q
 
-      - name: Compose up (core infra — no wait)
-        run: docker compose -f compose/core.yml up -d
+      - name: Compose up (core infra)
+        run: docker compose -f compose/core.yml up -d --wait
+
+      - name: Run health script
+        run: docker compose -f compose/core.yml up --build  --exit-code-from healthcheck healthcheck
 
       - name: Compose down
         if: always()
         run: docker compose -f compose/core.yml down -v
+

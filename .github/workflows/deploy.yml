@@ -20,7 +20,7 @@ jobs:
           key: ${{ secrets.INFRA_SSH_KEY }}
           script: |
             set -euo pipefail
-
+            PROJECT=sara-core
             cd /opt/sara-ai
 
             # Regenerate .env
@@ -34,24 +34,27 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
-            # copy for Compose
-            cp .env compose/.env
+            docker compose \
+               --env-file ../.env \             # points at the file you just wrote
+               -p "$PROJECT" \                  # idempotent container names
+               -f core.yml \
+               down --volumes --remove-orphans  # 1️⃣ cleanly stop previous run
+ 
+             docker compose \
+               --env-file ../.env \
+               -p "$PROJECT" \
+               -f core.yml \
+               pull --quiet                     # 2️⃣ fetch newer images
+ 
+             docker compose \
+               --env-file ../.env \
+               -p "$PROJECT" \
+               -f core.yml \
+               up -d --force-recreate           # 3️⃣ start (or replace) services
+ 
+             docker compose \
+               --env-file ../.env \
+               -p "$PROJECT" \
+               -f core.yml \
+               ps                                # 4️⃣ show final state for logs
 
-            cd compose
-
-            # tear down everything
-            docker compose -f core.yml down -v
-
-            # pull new images
-            docker compose -f core.yml pull
-
-            # bring up only the primary services (no healthcheck orchestrator)
-            docker compose -f core.yml up -d \
-              redis \
-              nats \
-              postgres \
-              neo4j \
-              minio \
-              temporal \
-              traefik \
-              gateway

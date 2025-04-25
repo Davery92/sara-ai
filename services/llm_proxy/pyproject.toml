@@ -1,9 +1,17 @@
 [project]
-name = "sara-llm-proxy"
-version = "0.0.0"
-description = "WebSocket proxy that streams completions from a local LLM"
+name = "llm_proxy"
+version = "0.1.0"
 requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.111",
+  "uvicorn[standard]>=0.29",
+  "anyio",
+]
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_proxy*"]

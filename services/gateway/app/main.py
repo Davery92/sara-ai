@@ -1,14 +1,30 @@
-import uvicorn
-from fastapi import FastAPI
-from .api import router
-from .dependencies import get_settings
-from .auth import auth_middleware
+from fastapi import FastAPI, Depends, Request
+from fastapi.middleware import Middleware
+from .auth import (
+    AuthMiddleware,       # <— middleware class
+    login, verify, refresh,
+)
 
-settings = get_settings()
-app = FastAPI(title="Sara Gateway", version="0.1.0")
+# ─── FastAPI app with global auth middleware ─────────────────────────
+middleware = [Middleware(AuthMiddleware)]
+app = FastAPI(middleware=middleware)
 
-app.middleware("http")(auth_middleware)
-app.include_router(router)
+# ─── Auth endpoints (public) ─────────────────────────────────────────
+@app.post("/auth/login")
+def _login(username: str = "demo"):          # TODO: replace stub auth
+    return login(username)
 
-if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
+@app.post("/auth/refresh")
+def _refresh(token: str):
+    return refresh(token)
+
+# ─── Example protected endpoint ──────────────────────────────────────
+@app.get("/auth/me")
+def _me(payload: dict = Depends(verify)):
+    return {"user": payload["sub"], "iat": payload["iat"]}
+
+# ─── Health + chat routers (already created) ─────────────────────────
+from .api import router as api_router
+from .chat import router as chat_router
+app.include_router(api_router)
+app.include_router(chat_router)

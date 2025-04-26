@@ -1,14 +1,24 @@
-import uvicorn
-from fastapi import FastAPI
-from .api import router
-from .dependencies import get_settings
-from .auth import auth_middleware
+# services/gateway/app/main.py
 
-settings = get_settings()
-app = FastAPI(title="Sara Gateway", version="0.1.0")
+from fastapi import FastAPI, Depends, Request
+from fastapi.middleware import Middleware
+from fastapi.responses import JSONResponse
 
-app.middleware("http")(auth_middleware)
-app.include_router(router)
+from .auth import auth_middleware, verify
+from .routes.auth import router as auth_router
+from .api import router as api_router
+from .chat import router as chat_router
 
-if __name__ == "__main__":
-    uvicorn.run("app.main:app", host="0.0.0.0", port=8000, reload=False)
+app = FastAPI(middleware=[Middleware(auth_middleware)])
+
+# ─── Auth routes (login, refresh, logout) ───────────────────────────────
+app.include_router(auth_router)
+
+# ─── Protected “me” example ─────────────────────────────────────────────
+@app.get("/auth/me")
+def me(payload: dict = Depends(verify)):
+    return {"user": payload["sub"], "iat": payload["iat"]}
+
+# ─── Other feature routers ────────────────────────────────────────────────
+app.include_router(api_router)
+app.include_router(chat_router)

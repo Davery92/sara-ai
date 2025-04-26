@@ -6,6 +6,7 @@ jobs:
   compose-test:
     runs-on: self-hosted
     services: {}          # we bring our own in the steps
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -15,10 +16,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install test dependencies
+      - name: Install Gateway deps
         run: |
           python -m pip install --no-cache-dir -r services/gateway/requirements.txt
           python -m pip install --no-cache-dir -e services/gateway
+
+      - name: Install LLM-Proxy deps
+        run: |
+          python -m pip install --no-cache-dir -e services/llm_proxy
 
       - name: Create .env for Compose
         run: |
@@ -35,7 +40,7 @@ jobs:
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
 
-      - name: Run pytest
+      - name: Run pytest (all services)
         run: pytest -q
 
       - name: Compose up (core infra — no wait)

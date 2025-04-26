@@ -1,30 +1,24 @@
+# services/gateway/app/main.py
+
 from fastapi import FastAPI, Depends, Request
 from fastapi.middleware import Middleware
-from .auth import (
-    AuthMiddleware,       # <— middleware class
-    login, verify, refresh,
-)
+from fastapi.responses import JSONResponse
 
-# ─── FastAPI app with global auth middleware ─────────────────────────
-middleware = [Middleware(AuthMiddleware)]
-app = FastAPI(middleware=middleware)
-
-# ─── Auth endpoints (public) ─────────────────────────────────────────
-@app.post("/auth/login")
-def _login(username: str = "demo"):          # TODO: replace stub auth
-    return login(username)
-
-@app.post("/auth/refresh")
-def _refresh(token: str):
-    return refresh(token)
-
-# ─── Example protected endpoint ──────────────────────────────────────
-@app.get("/auth/me")
-def _me(payload: dict = Depends(verify)):
-    return {"user": payload["sub"], "iat": payload["iat"]}
-
-# ─── Health + chat routers (already created) ─────────────────────────
+from .auth import auth_middleware, verify
+from .routes.auth import router as auth_router
 from .api import router as api_router
 from .chat import router as chat_router
+
+app = FastAPI(middleware=[Middleware(auth_middleware)])
+
+# ─── Auth routes (login, refresh, logout) ───────────────────────────────
+app.include_router(auth_router)
+
+# ─── Protected “me” example ─────────────────────────────────────────────
+@app.get("/auth/me")
+def me(payload: dict = Depends(verify)):
+    return {"user": payload["sub"], "iat": payload["iat"]}
+
+# ─── Other feature routers ────────────────────────────────────────────────
 app.include_router(api_router)
 app.include_router(chat_router)

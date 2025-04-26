@@ -9,6 +9,8 @@ services:
   redis:
     image: redis:7.2-alpine
     command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
     environment: *common-env
     volumes:
       - redis-data:/data
@@ -38,6 +40,8 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
+    ports:
+      - "5432:5432"
     environment:
       <<: *common-env
       POSTGRES_USER: "${POSTGRES_USER}"
@@ -94,12 +98,8 @@ services:
     ports:
       - "9000:9000"
     networks: [ backend ]
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:9000/minio/health/ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+    healthcheck: {}
+      
 
   # ────────────────────────── Temporal (all-in-one) ──────────────────────────
   temporal:
@@ -110,6 +110,7 @@ services:
       - ../.env
     environment:
       <<: *common-env
+      TEMPORAL_URL: "temporal:7233"
       # Tell Temporal to use Postgres (not Cassandra)
       DB: "postgres"
       DB_PORT: "5432"
@@ -123,13 +124,8 @@ services:
     ports:
       - "7233:7233"
     networks: [ backend ]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:7233/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 90s
-
+    healthcheck: {}
+      
 
   # ─────────────────────────── Traefik edge router ───────────────────────────
   traefik:
@@ -158,6 +154,16 @@ services:
     # labels:
     #   - "traefik.http.routers.traefik.rule=Host(`traefik.yourdomain.com`)"
     #   - "traefik.http.routers.traefik.service=api@internal"
+
+  # ─────────────────────────────── Dialogue Worker ───────────────────────────────
+
+  dialogue_worker:
+    build:
+      context: ../services/dialogue_worker
+    networks:
+      - backend
+    
+
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:

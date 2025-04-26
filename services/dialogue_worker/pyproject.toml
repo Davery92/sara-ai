@@ -1,18 +1,14 @@
 [project]
-name = "llm_proxy"
+name = "dialogue_worker"
 version = "0.1.0"
+description = "Temporal worker for echo workflow"
 requires-python = ">=3.12"
 dependencies = [
-  "fastapi>=0.111",
-  "uvicorn[standard]>=0.29",
-  "anyio",
-  "temporalio",
+  "temporalio>=1.11,<2.0",
+  "nats-py>=2.0,<3.0",
 ]
+
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["llm_proxy*"]

@@ -1,12 +1,14 @@
-name: build-test
+name: build-test-deploy
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 jobs:
-  compose-test:
-    runs-on: [self-hosted]
-
-    services: {}          # we bring our own in the steps
+  build-test:
+    runs-on: self-hosted
 
     steps:
       - name: Checkout code
@@ -32,21 +34,74 @@ jobs:
           POSTGRES_USER=${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB=${{ secrets.POSTGRES_DB }}
-
           NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
-
           MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
           MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
-
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
 
       - name: Run pytest (all services)
         run: pytest -q
 
-      - name: Compose up (core infra — no wait)
+      - name: Compose up core infra (just to validate docker works)
         run: docker compose -f compose/core.yml up -d
 
-      - name: Compose down
+      - name: Compose down after test
         if: always()
         run: docker compose -f compose/core.yml down -v
+
+  deploy:
+    name: Deploy to Infra VM
+    runs-on: self-hosted
+    needs: build-test
+    if: github.ref == 'refs/heads/main' && success()
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: SSH & Deploy to Infra VM
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: 10.185.1.76
+          username: david
+          key: ${{ secrets.INFRA_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            PROJECT=sara-core
+            cd /opt/sara-ai
+
+            # Regenerate .env
+            cat > .env <<EOF
+            POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+            POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+            NEO4J_PASSWORD=${{ secrets.NEO4J_PASSWORD }}
+            MINIO_ROOT_USER=${{ secrets.MINIO_ROOT_USER }}
+            MINIO_ROOT_PASSWORD=${{ secrets.MINIO_ROOT_PASSWORD }}
+            LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
+            EOF
+
+            docker compose \
+              --env-file ../.env \
+              -p "$PROJECT" \
+              -f core.yml \
+              down --volumes --remove-orphans
+
+            docker compose \
+              --env-file ../.env \
+              -p "$PROJECT" \
+              -f core.yml \
+              pull --quiet
+
+            docker compose \
+              --env-file ../.env \
+              -p "$PROJECT" \
+              -f core.yml \
+              up -d --force-recreate
+
+            docker compose \
+              --env-file ../.env \
+              -p "$PROJECT" \
+              -f core.yml \
+              ps

@@ -111,12 +111,9 @@ services:
     environment:
       <<: *common-env
       TEMPORAL_URL: "temporal:7233"
-      # Tell Temporal to use Postgres (not Cassandra)
       DB: "postgres"
       DB_PORT: "5432"
-      # Point Temporal at your Postgres service
       POSTGRES_SEEDS: "postgres"
-      # Postgres creds (pulled from ../.env via env_file)
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PWD: "${POSTGRES_PASSWORD}"
     volumes:
@@ -124,7 +121,12 @@ services:
     ports:
       - "7233:7233"
     networks: [ backend ]
-    healthcheck: {}
+    healthcheck:
+      test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
       
 
   # ─────────────────────────── Traefik edge router ───────────────────────────
@@ -162,6 +164,12 @@ services:
       context: ../services/dialogue_worker
     networks:
       - backend
+    depends_on:
+      temporal:
+        condition: service_started
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
     
 
 
@@ -244,16 +252,21 @@ services:
       - "8000:8000"
 
   llm_proxy:
-    build: ../services/llm_proxy
+    build:
+      context: ../services/llm_proxy
+      dockerfile: Dockerfile
     env_file: [ ../.env ]
     environment:
       <<: *common-env
-      OLLAMA_URL: "http://100.104.68.115:11434"   # dev target
+      OLLAMA_URL: "http://100.104.68.115:11434"
     networks: [ backend ]
     depends_on:
       nats: { condition: service_healthy }
+      temporal:
+        condition: service_started
     ports:
-    - "8001:8000" 
+      - "8001:8000"
+    restart: unless-stopped
 
 volumes:
   redis-data:

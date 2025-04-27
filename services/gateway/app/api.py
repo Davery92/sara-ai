@@ -4,6 +4,8 @@ import asyncpg, logging, os
 from .settings import PG_DSN        # or wherever you load the DSN
 
 router = APIRouter()
+class MessagePayload(BaseModel):
+    text: str
 
 
 @router.get("/healthz", status_code=status.HTTP_200_OK)
@@ -22,3 +24,9 @@ async def healthz():
         logging.debug("healthz: Postgres check skipped: %s", exc)
 
     return {"ok": True}
+
+@router.post("/messages")
+async def post_message(payload: MessagePayload):
+    # TODO: wire this into NATS or Temporal
+    # e.g. await nats_client.publish("messages", payload.json().encode())
+    return {"status": "queued", "text": payload.text}

@@ -6,7 +6,8 @@ dependencies = [
   "fastapi>=0.111",
   "uvicorn[standard]>=0.29",
   "anyio",
-  "temporalio",
+  "temporalio>=1.0",   
+  "httpx>=0.27",
 ]
 
 [build-system]

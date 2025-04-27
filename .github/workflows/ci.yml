@@ -4,7 +4,8 @@ on: [push, pull_request]
 
 jobs:
   compose-test:
-    runs-on: self-hosted
+    runs-on: [self-hosted, ci-runner]
+
     services: {}          # we bring our own in the steps
 
     steps:

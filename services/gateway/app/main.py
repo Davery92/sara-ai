@@ -1,24 +1,42 @@
 # services/gateway/app/main.py
 
-from fastapi import FastAPI, Depends, Request
+from fastapi import FastAPI, Depends
 from fastapi.middleware import Middleware
-from fastapi.responses import JSONResponse
+from contextlib import asynccontextmanager
 
 from .auth import auth_middleware, verify
+from .routes.api import router as api_router
 from .routes.auth import router as auth_router
-from .api import router as api_router
-from .chat import router as chat_router
+from .routes.messages import router as messages_router
+from .chat import router as chat_router  # Add chat router
+from .db.session import init_models
 
-app = FastAPI(middleware=[Middleware(auth_middleware)])
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await init_models()
+    yield
+    # Shutdown (if needed)
 
-# ─── Auth routes (login, refresh, logout) ───────────────────────────────
+app = FastAPI(
+    redirect_slashes=False,
+    middleware=[Middleware(auth_middleware)],
+    lifespan=lifespan
+)
+
+# ─── Public health check ─────────────────────────────────────────────────────
+app.include_router(api_router)
+
+# ─── Authentication endpoints ─────────────────────────────────────────────────
 app.include_router(auth_router)
 
-# ─── Protected “me” example ─────────────────────────────────────────────
+# ─── Protected "whoami" ───────────────────────────────────────────────────────
 @app.get("/auth/me")
-def me(payload: dict = Depends(verify)):
+async def me(payload: dict = Depends(verify)):
     return {"user": payload["sub"], "iat": payload["iat"]}
 
-# ─── Other feature routers ────────────────────────────────────────────────
-app.include_router(api_router)
+# ─── LLM chat completions ────────────────────────────────────────────────────
 app.include_router(chat_router)
+
+# ─── Message queueing stub ────────────────────────────────────────────────────
+app.include_router(messages_router)

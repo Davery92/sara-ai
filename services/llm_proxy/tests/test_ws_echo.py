@@ -1,31 +1,46 @@
+# llm_proxy/tests/test_ws_echo.py
+
 import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 from llm_proxy.app.main import app
 
-@patch('llm_proxy.app.main.stream_completion')
-def test_ws_roundtrip(mock_stream_completion):
-    # Mock the stream_completion to return predictable chunks
-    async def mock_stream():
-        yield {"content": "Hello", "done": False}
-        yield {"content": " world!", "done": True}
+@pytest.mark.asyncio
+async def test_ws_roundtrip():
+    """Test the WebSocket endpoint with mocked Temporal client"""
     
-    mock_stream_completion.return_value = mock_stream()
+    # Create a mock Temporal client
+    mock_temporal_client = AsyncMock()
+    mock_handle = AsyncMock()
+    mock_handle.result.return_value = {
+        "response": "Test response",
+        "done": True
+    }
+    mock_temporal_client.start_workflow.return_value = mock_handle
     
-    client = TestClient(app)
-    with client.websocket_connect("/v1/stream") as websocket:
-        # Send test payload
-        test_payload = {
-            "model": "test-model",
-            "prompt": "Hello, world!",
-            "stream": True
-        }
-        websocket.send_json(test_payload)
+    # Patch the temporal_client in the main module
+    with patch('llm_proxy.app.main.temporal_client', mock_temporal_client):
+        client = TestClient(app)
         
-        # Receive first chunk
-        chunk1 = websocket.receive_json()
-        assert chunk1 == {"content": "Hello", "done": False}
-        
-        # Receive second chunk
-        chunk2 = websocket.receive_json()
-        assert chunk2 == {"content": " world!", "done": True}
+        with client.websocket_connect("/v1/stream") as websocket:
+            # Send test data
+            test_data = {
+                "model": "llama2",
+                "prompt": "Hello, world!",
+                "stream": False
+            }
+            websocket.send_json(test_data)
+            
+            # Receive response
+            response = websocket.receive_json()
+            
+            # Assert response
+            assert response["response"] == "Test response"
+            assert response["done"] == True
+            
+            # Assert that the workflow was started with correct parameters
+            mock_temporal_client.start_workflow.assert_called_once()
+            args = mock_temporal_client.start_workflow.call_args
+            assert args[0][0] == "LLMWorkflow"
+            assert args[1]["args"] == ["llama2", "Hello, world!", False]
+            assert args[1]["task_queue"] == "llm-queue"

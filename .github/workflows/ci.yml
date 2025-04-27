@@ -54,7 +54,8 @@ jobs:
     name: Deploy to Infra VM
     runs-on: self-hosted
     needs: build-test
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push' && success()
+    if: success()
+
 
     steps:
       - name: Checkout code

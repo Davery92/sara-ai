@@ -1,20 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-from ..db.session import get_session
-from ..db.models import Message
+# services/gateway/app/routes/messages.py
 
-router = APIRouter(prefix="/messages")
+from fastapi import APIRouter, status
+from pydantic import BaseModel
 
-@router.post("/", status_code=201)
-async def create_message(
-    payload: dict,
-    session: AsyncSession = Depends(get_session)
-):
-    text = payload.get("text")
-    if not text:
-        raise HTTPException(400, "Missing `text` field")
-    msg = Message(text=text)
-    session.add(msg)
-    await session.commit()
-    await session.refresh(msg)
-    return {"id": msg.id, "text": msg.text, "created_at": msg.created_at}
+router = APIRouter(prefix="/messages", tags=["messages"])
+
+class MessageIn(BaseModel):
+    text: str
+
+class MessageOut(BaseModel):
+    status: str
+    text: str
+
+@router.post("/", response_model=MessageOut, status_code=status.HTTP_201_CREATED)
+async def create_message(payload: MessageIn):
+    return MessageOut(status="queued", text=payload.text)

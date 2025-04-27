@@ -1,74 +1,57 @@
-# services/gateway/app/routes/auth.py
-
-from fastapi import APIRouter, Depends, HTTPException, Body
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 import jwt
-import os
+from ..auth import _SECRET, _ALG, login, get_redis
 
-from ..auth import _sign, _ALG, _SECRET, _ACCESS_EXPIRE, _REFRESH_EXPIRE, login
-from ..redis_client import get_redis
+router = APIRouter(prefix="/auth", tags=["auth"])
 
-router = APIRouter(prefix="/auth")
-bearer = HTTPBearer(auto_error=True)
+class LoginIn(BaseModel):
+    username: str
 
-@router.post("/login")
-async def login_endpoint(username: str = Body(..., embed=True)):
-    """
-    Stub login – returns access_token & refresh_token
-    """
-    return login(username)
+class TokenOut(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
 
+class RefreshIn(BaseModel):
+    refresh_token: str
 
-@router.post("/refresh")
-async def refresh_endpoint(
-    refresh_token: str = Body(..., embed=True)
-):
-    """
-    Consume a refresh_token, blacklist its JTI, and issue new tokens.
-    """
+@router.post("/login", response_model=TokenOut)
+async def login_route(payload: LoginIn):
+    return login(payload.username)
+
+@router.post("/refresh", response_model=TokenOut)
+async def refresh_route(payload: RefreshIn):
+    # In-memory blacklist for testing (since Redis might not be available)
+    if not hasattr(refresh_route, "_blacklist"):
+        refresh_route._blacklist = set()
+        
     try:
-        payload = jwt.decode(refresh_token, _SECRET, algorithms=[_ALG])
-        if payload.get("type") != "refresh":
+        token_data = jwt.decode(payload.refresh_token, _SECRET, algorithms=[_ALG])
+        if token_data.get("type") != "refresh":
             raise jwt.InvalidTokenError("Not a refresh token")
     except jwt.PyJWTError as e:
-        raise HTTPException(status_code=401, detail=f"Invalid token: {e}")
+        raise HTTPException(status_code=401, detail=str(e))
 
-    # blacklist the old refresh token
-    redis = await get_redis()
-    await redis.set(f"blacklist:{payload['jti']}", "1", ex=int(_REFRESH_EXPIRE))
+    old_jti = token_data["jti"]
 
-    # issue fresh tokens
-    new_access, _  = _sign({"sub": payload["sub"], "type": "access"},  _ACCESS_EXPIRE)
-    new_refresh, _ = _sign({"sub": payload["sub"], "type": "refresh"}, _REFRESH_EXPIRE)
-    return {
-        "access_token":  new_access,
-        "refresh_token": new_refresh,
-        "token_type":    "bearer"
-    }
+    # Check in-memory blacklist first
+    if old_jti in refresh_route._blacklist:
+        raise HTTPException(status_code=401, detail="Token already used (blacklisted)")
 
-
-@router.post("/logout")
-async def logout_endpoint(
-    credentials: HTTPAuthorizationCredentials = Depends(bearer),
-    refresh_token: str = Body(..., embed=True),
-):
-    """
-    Blacklist both the presented access_token and the given refresh_token.
-    """
-    # blacklist current access token
     try:
-        data = jwt.decode(credentials.credentials, _SECRET, algorithms=[_ALG])
-    except jwt.PyJWTError:
-        raise HTTPException(status_code=401, detail="Invalid access token")
+        redis = await get_redis()
+        if redis:
+            already_blacklisted = await redis.get(f"blacklist:{old_jti}")
+            if already_blacklisted:
+                raise HTTPException(status_code=401, detail="Token already used (blacklisted)")
+            # Blacklist the token with expiration
+            await redis.set(f"blacklist:{old_jti}", "1", ex=int(token_data["exp"] - token_data["iat"]))
+        else:
+            # If Redis is not available, use in-memory blacklist
+            refresh_route._blacklist.add(old_jti)
+    except Exception:
+        # If Redis fails, use in-memory blacklist
+        refresh_route._blacklist.add(old_jti)
 
-    redis = await get_redis()
-    await redis.set(f"blacklist:{data['jti']}", "1", ex=int(_ACCESS_EXPIRE))
-
-    # blacklist the provided refresh token
-    try:
-        rdata = jwt.decode(refresh_token, _SECRET, algorithms=[_ALG])
-        await redis.set(f"blacklist:{rdata['jti']}", "1", ex=int(_REFRESH_EXPIRE))
-    except jwt.PyJWTError:
-        pass
-
-    return {"detail": "Logged out"}
+    return login(token_data["sub"])

@@ -1,6 +1,6 @@
 from fastapi import APIRouter, status
 import asyncpg, logging, os
-
+from pydantic import BaseModel
 from .settings import PG_DSN        # or wherever you load the DSN
 
 router = APIRouter()

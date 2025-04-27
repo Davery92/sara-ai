@@ -82,26 +82,31 @@ jobs:
             LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
             EOF
 
+            # Cleanly stop previous run
             docker compose \
               --env-file ../.env \
               -p "$PROJECT" \
               -f core.yml \
               down --volumes --remove-orphans
 
+            # Pull latest images
             docker compose \
               --env-file ../.env \
               -p "$PROJECT" \
               -f core.yml \
               pull --quiet
 
+            # Start new containers
             docker compose \
               --env-file ../.env \
               -p "$PROJECT" \
               -f core.yml \
               up -d --force-recreate
 
+            # Show final state
             docker compose \
               --env-file ../.env \
               -p "$PROJECT" \
               -f core.yml \
               ps
+

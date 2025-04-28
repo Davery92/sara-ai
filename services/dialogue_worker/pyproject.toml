@@ -7,6 +7,7 @@ dependencies = [
   "temporalio>=1.11,<2.0",
   "nats-py>=2.0,<3.0",
   "aiohttp",
+  "nats-py",
 ]
 
 

@@ -3,3 +3,4 @@ uvicorn[standard]==0.29.*
 httpx==0.27.*
 httpx[websockets]==0.27.*
 temporalio>=1.0
+aiohttp

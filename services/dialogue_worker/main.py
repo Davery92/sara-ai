@@ -1,76 +1,74 @@
-import asyncio
-import os
-import aiohttp
-import json
-from datetime import timedelta
-from typing import AsyncIterator
-from temporalio import workflow, activity
-from temporalio.client import Client
-from temporalio.worker import Worker
+# services/dialogue_worker/main.py
+"""
+NATS listener that forwards chat requests to llm_proxy (/v1/stream)
+and streams the chunks back to NATS.
+"""
+import asyncio, json, logging, os
 from nats.aio.client import Client as NATS
-import logging
+import aiohttp
 
-# Set up logging
+# ── Config ────────────────────────────────────────────────────────────────
+NATS_URL   = os.getenv("NATS_URL",   "nats://nats:4222")
+LLM_PROXY  = os.getenv("LLM_PROXY",  "http://llm_proxy:8000")
+
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+log = logging.getLogger("dialogue_worker")
 
-# Get Ollama URL from environment variable
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://100.104.68.115:11434")
 
-@activity.defn
-async def call_ollama(model: str, prompt: str) -> dict:
-    """Call Ollama API for LLM completion"""
+# ── Helper: open a single streaming request to llm_proxy ──────────────────
+async def forward_to_llm_proxy(payload: dict, reply_subject: str, nc: NATS):
+    """
+    1. WebSocket-connect to llm_proxy:/v1/stream
+    2. Send the JSON payload
+    3. For every token chunk that comes back, publish it to NATS `reply_subject`
+    """
+    async with aiohttp.ClientSession() as session:
+        async with session.ws_connect(f"{LLM_PROXY}/v1/stream") as ws:
+            # Send the initial JSON body *once*.
+            await ws.send_json(payload)
+
+            # Relay every token chunk back to NATS.
+            async for msg in ws:
+                if msg.type == aiohttp.WSMsgType.BINARY:
+                    await nc.publish(reply_subject, msg.data)
+                elif msg.type == aiohttp.WSMsgType.TEXT:
+                    await nc.publish(reply_subject, msg.data.encode())
+                elif msg.type == aiohttp.WSMsgType.ERROR:
+                    raise ws.exception()
+
+
+# ── NATS subscription callback ────────────────────────────────────────────
+async def on_request(msg):
+    """
+    Triggered for every message on subjects that match 'chat.request.*'
+    """
     try:
-        url = f"{OLLAMA_URL}/api/generate"
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": False
-        }
-        
-        async with aiohttp.ClientSession() as session:
-            async with session.post(url, json=payload) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"Ollama error: {response.status} - {error_text}")
-                
-                result = await response.json()
-                logger.info(f"Ollama response: {result}")
-                return result
-    
+        payload       = json.loads(msg.data)
+        reply_subject = msg.reply             # already set by Gateway
+        await forward_to_llm_proxy(payload, reply_subject, msg._client)
     except Exception as e:
-        logger.error(f"Error calling Ollama: {e}")
-        raise
+        log.exception("worker failed: %s", e)
+        
+        if msg.reply:
+            # Only try to reply if reply_subject actually exists
+            await msg._client.publish(
+                msg.reply,
+                json.dumps({"error": str(e)}).encode()
+            )
+        else:
+            log.error("Cannot reply to sender: missing reply subject.")
 
-@workflow.defn
-class LLMWorkflow:
-    @workflow.run
-    async def run(self, model: str, prompt: str, stream: bool = False) -> dict:
-        # For now, we'll just use the non-streaming version
-        # Temporal doesn't handle streaming activities well
-        return await workflow.execute_activity(
-            call_ollama,
-            args=[model, prompt],
-            start_to_close_timeout=timedelta(seconds=30)
-        )
 
+
+# ── Main event-loop ───────────────────────────────────────────────────────
 async def main():
-    # connect to NATS (optional: to subscribe to requests)
     nc = NATS()
-    await nc.connect(servers=["nats://nats:4222"])
-    
-    # connect to Temporal
-    client = await Client.connect("temporal:7233")
-    
-    # run the worker
-    async with Worker(
-        client,
-        task_queue="llm-queue",
-        workflows=[LLMWorkflow],
-        activities=[call_ollama]
-    ):
-        logger.info("Worker listening on 'llm-queue'...")
-        await asyncio.Future()  # run forever
+    await nc.connect(servers=[NATS_URL])
+    # Wild-card so a *single* worker can handle every session ID.
+    await nc.subscribe("chat.request.*", cb=on_request)
+    log.info("Dialogue Worker listening on chat.request.*")
+    await asyncio.Future()   # run forever
+
 
 if __name__ == "__main__":
     asyncio.run(main())

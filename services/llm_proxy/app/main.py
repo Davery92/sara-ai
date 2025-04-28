@@ -3,7 +3,7 @@ from temporalio.client import Client as TemporalClient
 from uuid import uuid4
 import logging
 import json
-from app.workflows import ChatWorkflow
+from .workflows import ChatWorkflow
 
 app = FastAPI(title="LLM Streaming Proxy")
 log = logging.getLogger("llm_proxy")

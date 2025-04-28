@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 from llm_proxy.app.main import app
 
-@pytest.mark.asyncio
+#@pytest.mark.asyncio
 async def test_ws_roundtrip():
     """Test the WebSocket endpoint with mocked Temporal client"""
     

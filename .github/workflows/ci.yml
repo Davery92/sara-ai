@@ -54,6 +54,17 @@ jobs:
         if: always()
         run: docker compose -f compose/core.yml down -v
 
+      - name: Show container status & failing logs
+        if: always()                   # runs even if previous step failed
+        run: |
+          docker compose -f compose/core.yml ps -a
+          echo "------- last 50 lines of unhealthy containers -------"
+          for svc in $(docker compose -f compose/core.yml ps --services --filter "status=exited"); do
+            echo "----- $svc -----"
+            docker compose -f compose/core.yml logs --tail=50 $svc
+          done
+
+
   deploy:
     name: Deploy to Infra VM
     runs-on: self-hosted

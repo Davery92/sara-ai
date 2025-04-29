@@ -8,6 +8,7 @@ services:
   # ─────────────────────────────── Redis ───────────────────────────────
   redis:
     image: redis:7.2-alpine
+    container_name: sara_redis
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "6379:6379"
@@ -24,6 +25,7 @@ services:
   # ─────────────────────────────── NATS ───────────────────────────────
   nats:
     image: nats:2.10-alpine
+    container_name: sara_nats
     command: ["-js", "-m", "8222"]
     environment: *common-env
     networks: [ backend ]
@@ -164,6 +166,7 @@ services:
   # ─────────────────────────────── Dialogue Worker ───────────────────────────────
 
   dialogue_worker:
+    container_name: sara_dialogue_worker
     build:
       context: ../services/dialogue_worker     # ← narrow context
       dockerfile: Dockerfile 

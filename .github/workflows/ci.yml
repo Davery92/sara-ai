@@ -49,8 +49,15 @@ jobs:
       - name: Run pytest (all services)
         run: pytest -q
 
-      - name: Compose up core infra (just to validate docker works)
-        run: docker compose -f compose/core.yml up -d
+      - name: Compose up full stack (infra + worker)
+        run: |
+          docker compose \
+            --env-file .env \
+            -p sara-core \
+            -f compose/core.yml \
+            -f compose/worker.yml \
+            up -d --build
+
 
       - name: Compose down after test
         if: always()

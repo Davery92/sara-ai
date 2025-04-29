@@ -8,6 +8,7 @@ dependencies = [
   "nats-py>=2.0,<3.0",
   "aiohttp",
   "nats-py",
+  "prometheus-client>=0.20,<1.0",
 ]
 
 

@@ -28,6 +28,10 @@ jobs:
         run: |
           python -m pip install --no-cache-dir -e services/llm_proxy
 
+      - name: Install Dialogue-Worker
+        run: python -m pip install --no-cache-dir -e services/dialogue_worker
+
+
       - name: Create .env for Compose
         run: |
           cat <<EOF > .env

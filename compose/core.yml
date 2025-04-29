@@ -145,31 +145,35 @@ services:
       - --certificatesresolvers.le.acme.tlschallenge=true
       - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL}
       - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+      - --api.dashboard=true
+      - --metrics.prometheus=true
+      - --metrics.prometheus.addrouterslabels=true
     ports:
       - "80:80"
       - "443:443"
+      - "8080:8080" 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - letsencrypt:/letsencrypt
     networks: [ backend ]
     # (optional) enable dashboard if you like:
-    # labels:
-    #   - "traefik.http.routers.traefik.rule=Host(`traefik.yourdomain.com`)"
-    #   - "traefik.http.routers.traefik.service=api@internal"
+    labels:
+      - "traefik.http.routers.traefik.rule=Host(`traefik.yourdomain.com`)"
+      - "traefik.http.routers.traefik.service=api@internal"
 
   # ─────────────────────────────── Dialogue Worker ───────────────────────────────
 
   dialogue_worker:
     build:
-      context: ../services/dialogue_worker
-    networks:
-      - backend
-    depends_on:
-      temporal:
-        condition: service_started
-      nats:
-        condition: service_healthy
-    restart: unless-stopped
+      context: ../services/dialogue_worker     # ← narrow context
+      dockerfile: Dockerfile 
+    depends_on: [ nats, llm_proxy ]
+    environment:
+      NATS_URL:      nats://nats:4222
+      LLM_WS_URL:    ws://llm_proxy:8000/v1/stream
+      METRICS_PORT:  8000
+    networks: [ backend ]
+    
     
 
 
@@ -245,7 +249,13 @@ services:
     environment:
       <<: *common-env
       ENV: prod
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
     depends_on:
+      postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
     networks: [ backend ]
     ports:
@@ -267,6 +277,16 @@ services:
     ports:
       - "8001:8000"
     restart: unless-stopped
+
+  llm_worker:
+    build:
+      context: ../services/llm_proxy
+    command: ["python", "worker.py"]
+    depends_on:
+      temporal:
+        condition: service_healthy
+    networks:
+      - backend
 
 volumes:
   redis-data:

@@ -44,12 +44,14 @@ jobs:
                --env-file ../.env \
                -p "$PROJECT" \
                -f core.yml \
+               -f monitoring.yml \
                pull --quiet                     # 2️⃣ fetch newer images
  
              docker compose \
                --env-file ../.env \
                -p "$PROJECT" \
                -f core.yml \
+               -f monitoring.yml \
                up -d --force-recreate           # 3️⃣ start (or replace) services
  
              docker compose \

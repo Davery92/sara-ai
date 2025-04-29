@@ -32,10 +32,10 @@ jobs:
         run: python -m pip install --no-cache-dir -e services/dialogue_worker
 
 
-      - name: Create .env for Compose
+      - name: Create .env next to core.yml
         shell: bash
         run: |
-          cat > .env <<EOF
+          cat > compose/.env <<EOF          # ← inside the compose/ folder
           POSTGRES_USER=${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB=${{ secrets.POSTGRES_DB }}
@@ -46,11 +46,17 @@ jobs:
           EOF
 
 
+
       - name: Run pytest (all services)
         run: pytest -q
 
-      - name: Compose up core infra (just to validate docker works)
-        run: docker compose -f compose/core.yml up -d
+      - name: Compose up stack (core + monitoring + ci profile)
+        run: |
+          docker compose \
+            -f compose/core.yml \
+            -f compose/monitoring.yml \
+            --profile ci \
+            up -d --build
 
       - name: Compose down after test
         if: always()

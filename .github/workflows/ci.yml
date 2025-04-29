@@ -55,6 +55,7 @@ jobs:
             --env-file .env \
             -p sara-core \
             -f compose/core.yml \
+            -f compose/monitoring.yml \
             up -d --build
 
 

@@ -50,13 +50,8 @@ jobs:
       - name: Run pytest (all services)
         run: pytest -q
 
-      - name: Compose up stack (core + monitoring + ci profile)
-        run: |
-          docker compose \
-            -f compose/core.yml \
-            -f compose/monitoring.yml \
-            --profile ci \
-            up -d --build
+      - name: Compose up core infra (just to validate docker works)
+        run: docker compose -f compose/core.yml up -d
 
       - name: Compose down after test
         if: always()

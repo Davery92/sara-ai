@@ -32,10 +32,9 @@ jobs:
         run: python -m pip install --no-cache-dir -e services/dialogue_worker
 
 
-      - name: Create .env next to core.yml
-        shell: bash
+      - name: Create .env for Compose
         run: |
-          cat > compose/.env <<EOF          # ← inside the compose/ folder
+          cat <<EOF > .env
           POSTGRES_USER=${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_DB=${{ secrets.POSTGRES_DB }}

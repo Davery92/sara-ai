@@ -1,10 +1,9 @@
 # services/gateway/app/metrics.py
-from prometheus_client import Counter, Histogram
+from fastapi import APIRouter, Response
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
-WS_LATENCY  = Histogram("gw_ws_send_seconds", "WS send latency", ["path"])
-TOKENS_OUT  = Counter("gw_tokens_out_total", "Tokens streamed", ["model"])
-CLIENT_DROPS = Counter("gw_client_disconnect_total", "Disconnected mid-stream")
+router = APIRouter()
 
-# mount the /metrics endpoint once
-from prometheus_client import make_asgi_app
-app.mount("/metrics", make_asgi_app())
+@router.get("/metrics")
+async def metrics() -> Response:
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

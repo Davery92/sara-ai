@@ -28,3 +28,5 @@ scrape_configs:
   - job_name: dialogue_worker
     metrics_path: /metrics
     static_configs: [{targets: ['dialogue_worker:8000']}]
+
+

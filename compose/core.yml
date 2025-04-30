@@ -138,30 +138,25 @@ services:
     restart: unless-stopped
     env_file:
       - ../.env
-    environment:
-      <<: *common-env
     command:
+      # discover containers via labels
       - --providers.docker=true
-      - --entrypoints.web.address=:80
-      - --entrypoints.websecure.address=:443
-      - --certificatesresolvers.le.acme.tlschallenge=true
-      - --certificatesresolvers.le.acme.email=${LETSENCRYPT_EMAIL}
-      - --certificatesresolvers.le.acme.storage=/letsencrypt/acme.json
+
+      # internal traffic for your services (no host-port)
+      - --entrypoints.int.address=:8000   
+
+      # dashboard + API
       - --api.dashboard=true
+      - --api.insecure=true          # serves dashboard on :8080
       - --metrics.prometheus=true
       - --metrics.prometheus.addrouterslabels=true
+
+      # ✗ REMOVE the ACME flags (NPM will handle TLS at the edge)
     ports:
-      - "80:80"
-      - "443:443"
-      - "8080:8080" 
+      - "8080:8080"                  # <-- the bit you asked for
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
     networks: [ backend ]
-    # (optional) enable dashboard if you like:
-    labels:
-      - "traefik.http.routers.traefik.rule=Host(`traefik.yourdomain.com`)"
-      - "traefik.http.routers.traefik.service=api@internal"
 
   # ─────────────────────────────── Dialogue Worker ───────────────────────────────
 

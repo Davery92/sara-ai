@@ -62,29 +62,25 @@ async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: s
         await nc.unsubscribe(ack_sid)
 
 # ── NATS subscription callback ────────────────────────────────────────────
-async def on_request(msg):
+async def on_request(msg, nc):                # <-- add nc
     payload       = json.loads(msg.data)
     reply_subject = msg.reply
-    ack_subject   = msg.headers.get("Ack", "").decode() if msg.headers else None
+    ack_subject   = msg.headers.get("Ack", "")
 
     if not ack_subject:
         logging.error("missing Ack header – refusing request")
         return
 
-    await forward_to_llm_proxy(payload, reply_subject, ack_subject, msg._client)
-
+    await forward_to_llm_proxy(payload, reply_subject, ack_subject, nc)
 
 # ── Main event-loop ───────────────────────────────────────────────────────
 async def main():
-    # expose /metrics BEFORE we connect so Prom doesn’t scrape an empty target
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics on :%s/metrics", METRICS_PORT)
 
-    nc = NATS()
-    await nc.connect(servers=[NATS_URL])
-    await consume(on_request)
-    log.info("Dialogue Worker listening on chat.request.*")
-    await asyncio.Future()   # run forever
+    # ✅ no explicit NATS() or connect here
+    await consume(on_request)     # loops forever
+
 
 
 if __name__ == "__main__":

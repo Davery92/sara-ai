@@ -4,9 +4,7 @@ from nats.js import JetStreamContext
 
 JWT_SECRET = os.getenv("JWT_SECRET")
 
-async def publish_chat(js: JetStreamContext, subj: str, payload: bytes, jwt_raw: str):
-    """
-    Push a chat request onto JetStream with the client's JWT in 'Auth' header.
-    """
-    hdrs = {"Auth": jwt_raw}
+async def publish_chat(js, subj: str, payload: bytes, jwt_raw: str | None):
+    hdrs = {"Auth": jwt_raw} if jwt_raw else {}
     await js.publish(subj, payload, headers=hdrs)
+

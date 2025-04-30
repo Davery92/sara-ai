@@ -1,17 +1,19 @@
 [project]
 name = "dialogue_worker"
 version = "0.1.0"
-description = "Temporal worker for echo workflow"
+description = "Dialogue worker for Sara AI"
 requires-python = ">=3.12"
 dependencies = [
   "temporalio>=1.11,<2.0",
   "nats-py>=2.0,<3.0",
   "aiohttp",
-  "nats-py",
   "prometheus-client>=0.20,<1.0",
 ]
-
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
+
+# NEW 👇 — tell setuptools exactly which standalone modules to expose
+[tool.setuptools]
+py-modules = ["main", "jetstream"]

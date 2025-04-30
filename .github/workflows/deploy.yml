@@ -38,6 +38,7 @@ jobs:
                --env-file ../.env \             # points at the file you just wrote
                -p "$PROJECT" \                  # idempotent container names
                -f core.yml \
+                -f monitoring.yml \              # compose files to use
                down --volumes --remove-orphans  # 1️⃣ cleanly stop previous run
  
              docker compose \

@@ -81,15 +81,6 @@ jobs:
     if: success()
 
     steps:
-      - name: Copy monitoring.yml to VM
-        uses: appleboy/scp-action@v0.1.4
-        with:
-          host: 10.185.1.76
-          username: david
-          key: ${{ secrets.INFRA_SSH_KEY }}
-          source: "compose/monitoring.yml"
-          target: "/opt/sara-ai/compose/"
-          
       - name: Checkout code
         uses: actions/checkout@v4
 

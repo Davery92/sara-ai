@@ -95,9 +95,7 @@ jobs:
             PROJECT=sara-core
             cd /opt/sara-ai
             
-            git fetch --quiet origin $GITHUB_SHA
-            git reset --hard $GITHUB_SHA
-            echo "Checked out $(git rev-parse --short HEAD) on VM"
+            
             # Clean up any conflicting containers
             docker ps -a --format '{{.Names}}' | grep '_traefik$\|_minio$\|_redis$\|_neo4j$\|_temporal$\|_nats$' | xargs -r docker rm -f || true
 

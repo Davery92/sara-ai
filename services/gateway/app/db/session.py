@@ -1,3 +1,4 @@
+# services/gateway/app/db/session.py
 import os
 from dotenv import load_dotenv, find_dotenv
 from sqlalchemy import text
@@ -13,7 +14,7 @@ DATABASE_URL = os.getenv(
     "DATABASE_URL",
     "postgresql+asyncpg://"
     f"{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
-    f"@localhost:5432/{os.getenv('POSTGRES_DB')}"
+    f"@{os.getenv('POSTGRES_HOST', 'postgres')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB')}"
 )
 
 # Create the async engine & session factory

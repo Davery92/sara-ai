@@ -8,6 +8,7 @@ dependencies = [
   "anyio",
   "temporalio>=1.0",   
   "httpx>=0.27",
+  "aiohttp>=3.8.0",
 ]
 
 [build-system]

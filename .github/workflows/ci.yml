@@ -28,6 +28,10 @@ jobs:
         run: |
           python -m pip install --no-cache-dir -e services/llm_proxy
 
+      - name: Install Dialogue-Worker
+        run: python -m pip install --no-cache-dir -e services/dialogue_worker
+
+
       - name: Create .env for Compose
         run: |
           cat <<EOF > .env
@@ -40,15 +44,35 @@ jobs:
           LETSENCRYPT_EMAIL=${{ secrets.LETSENCRYPT_EMAIL }}
           EOF
 
+
+
       - name: Run pytest (all services)
         run: pytest -q
 
-      - name: Compose up core infra (just to validate docker works)
-        run: docker compose -f compose/core.yml up -d
+      - name: Compose up full stack (infra + worker)
+        run: |
+          docker compose \
+            --env-file .env \
+            -p sara-core \
+            -f compose/core.yml \
+            -f compose/monitoring.yml \
+            up -d --build
+
 
       - name: Compose down after test
         if: always()
         run: docker compose -f compose/core.yml down -v
+
+      - name: Show container status & failing logs
+        if: always()                   # runs even if previous step failed
+        run: |
+          docker compose -f compose/core.yml ps -a
+          echo "------- last 50 lines of unhealthy containers -------"
+          for svc in $(docker compose -f compose/core.yml ps --services --filter "status=exited"); do
+            echo "----- $svc -----"
+            docker compose -f compose/core.yml logs --tail=50 $svc
+          done
+
 
   deploy:
     name: Deploy to Infra VM
@@ -70,7 +94,8 @@ jobs:
             set -euo pipefail
             PROJECT=sara-core
             cd /opt/sara-ai
-
+            
+            
             # Clean up any conflicting containers
             docker ps -a --format '{{.Names}}' | grep '_traefik$\|_minio$\|_redis$\|_neo4j$\|_temporal$\|_nats$' | xargs -r docker rm -f || true
 
@@ -90,6 +115,7 @@ jobs:
               --env-file .env \
               -p "$PROJECT" \
               -f compose/core.yml \
+              -f compose/monitoring.yml \
               down --volumes --remove-orphans || true
 
             # Pull any updated images
@@ -97,6 +123,7 @@ jobs:
               --env-file .env \
               -p "$PROJECT" \
               -f compose/core.yml \
+              -f compose/monitoring.yml \
               pull --quiet
 
             # Rebuild and recreate containers
@@ -104,6 +131,7 @@ jobs:
               --env-file .env \
               -p "$PROJECT" \
               -f compose/core.yml \
+              -f compose/monitoring.yml \
               up -d --force-recreate
 
             # Show running containers
@@ -111,6 +139,7 @@ jobs:
               --env-file .env \
               -p "$PROJECT" \
               -f compose/core.yml \
+              -f compose/monitoring.yml \
               ps
 
 

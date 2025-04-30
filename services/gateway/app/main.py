@@ -10,6 +10,7 @@ from .routes.auth import router as auth_router
 from .routes.messages import router as messages_router
 from .chat import router as chat_router  # Add chat router
 from .db.session import init_models
+from .ws import router as ws_router
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,3 +41,5 @@ app.include_router(chat_router)
 
 # ─── Message queueing stub ────────────────────────────────────────────────────
 app.include_router(messages_router)
+
+app.include_router(ws_router)

@@ -26,14 +26,22 @@ services:
   nats:
     image: nats:2.10-alpine
     container_name: sara_nats
-    command: ["-js", "-m", "8222"]
+    command: ["-js", "-c", "/etc/nats/js.conf", "-m", "8222"]
+      
+      
+    volumes:
+      # Mount the stream definition read-only
+      - ./nats/stream.conf:/etc/nats/js.conf:ro
+    ports:
+      - "4222:4222"                    # client / JetStream traffic
     environment: *common-env
     networks: [ backend ]
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      test: [ "CMD", "wget", "-qO-", "http://localhost:8222/healthz" ]
       interval: 10s
       timeout: 3s
       retries: 5
+
 
   # ────────────────────────── PostgreSQL + pgvector ──────────────────────────
   postgres:
@@ -167,12 +175,15 @@ services:
       dockerfile: Dockerfile 
     depends_on: [ nats, llm_proxy ]
     environment:
+      JWT_ALG: HS256
+      JWT_SECRET: super-dev-secret-change-me
+
       NATS_URL:      nats://nats:4222
       LLM_WS_URL:    ws://llm_proxy:8000/v1/stream
       METRICS_PORT:  8000
     networks: [ backend ]
     
-    
+  
 
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
@@ -293,6 +304,7 @@ volumes:
   minio-data:
   temporal-data:
   letsencrypt:
+
 
 networks:
   backend:

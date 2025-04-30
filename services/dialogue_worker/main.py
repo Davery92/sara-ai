@@ -7,6 +7,8 @@ import asyncio, json, logging, os, time
 from nats.aio.client import Client as NATS
 import aiohttp
 from prometheus_client import Counter, Histogram, start_http_server
+from jetstream import consume 
+
 
 # ── Config ────────────────────────────────────────────────────────────────
 NATS_URL    = os.getenv("NATS_URL", "nats://nats:4222")
@@ -80,7 +82,7 @@ async def main():
 
     nc = NATS()
     await nc.connect(servers=[NATS_URL])
-    await nc.subscribe("chat.request.*", cb=on_request)
+    await consume(on_request)
     log.info("Dialogue Worker listening on chat.request.*")
     await asyncio.Future()   # run forever
 

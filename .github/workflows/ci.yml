@@ -84,6 +84,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+
       - name: SSH & Deploy to Infra VM
         uses: appleboy/ssh-action@v1.0.0
         with:

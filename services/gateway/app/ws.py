@@ -40,10 +40,14 @@ async def stream_endpoint(ws: WebSocket):
                 continue
 
             # 4) Publish the client’s chat request
+            jwt_raw = ws.headers.get("Authorization", "").removeprefix("Bearer ").strip()
+            hdrs = {"Auth": jwt_raw.encode()} if jwt_raw else {}
+            
             await nc.publish(
-                 req_subj,
-                 json.dumps(payload).encode(),
-                 reply=resp_subj
+                req_subj,
+                json.dumps(payload).encode(),
+                reply=resp_subj
+                , headers=hdrs
              )
 
 

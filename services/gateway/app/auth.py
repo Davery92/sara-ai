@@ -79,7 +79,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
     """
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
         # skip auth on public paths
-        if request.url.path.startswith(("/healthz", "/auth")):
+        if request.url.path.startswith(("/healthz", "/auth", "/metrics")):
             return await call_next(request)
         try:
             creds = await security(request)

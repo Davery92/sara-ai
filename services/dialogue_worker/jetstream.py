@@ -2,6 +2,8 @@ import os, jwt, asyncio, logging
 from nats.aio.client import Client as NATS
 from nats.js.api import ConsumerConfig, StreamConfig
 from prometheus_client import Counter
+from nats.errors import TimeoutError
+from jwt.exceptions import InvalidTokenError   
 
 ALG   = os.getenv("JWT_ALG", "HS256")
 KEY   = os.getenv("JWT_SECRET", "dev-secret-change-me")
@@ -11,7 +13,7 @@ AUTH_FAILS = Counter("dw_auth_fail_total", "JWT verification failures")
 def verify(tok: str):    # raises on bad sig / expiry
     try:
         return jwt.decode(tok, KEY, algorithms=[ALG])
-    except jwt.PyJWTError:
+    except jwt.InvalidTokenError:
         AUTH_FAILS.inc()
         raise
 
@@ -40,12 +42,25 @@ async def consume(loop_cb):
     sub = await js.pull_subscribe("chat.request.*", "dw")
 
     while True:
-        for m in await sub.fetch(10, timeout=1):
+        try:
+            msgs = await sub.fetch(10, timeout=1)
+        except TimeoutError:
+            # no messages arrived in this interval → just loop again
+            await asyncio.sleep(0.1)
+            continue
+        except Exception as e:
+            logging.error("unexpected error fetching messages: %s", e)
+            await asyncio.sleep(1)
+            continue
+
+        for m in msgs:
             try:
                 verify(m.header.get("Auth", ""))
-                await loop_cb(m, nc)   # your existing forward-to-LLM
+                await loop_cb(m, nc)
                 await m.ack()
             except Exception as e:
                 logging.warning("rejecting msg: %s", e)
-                await m.term()         # dead-letter (or .nak() to retry)
+                await m.term()
+
+        # slight backoff to avoid a tight spin
         await asyncio.sleep(0.1)

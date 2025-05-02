@@ -1,4 +1,5 @@
 import jwt, httpx, asyncio
+from jwt import encode as jwt_encode
 from nats.aio.client import Client as NATS
 
 BAD = jwt.encode({"sub": "anon", "exp": 0}, "wrong", algorithm="HS256")

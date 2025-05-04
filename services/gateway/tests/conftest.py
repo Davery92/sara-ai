@@ -5,6 +5,7 @@ import pytest_asyncio
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import UUID, uuid4
+from dotenv import load_dotenv
 
 # Add the project root to the path so imports work correctly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -13,6 +14,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 from app.main import app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+
+load_dotenv()
 
 # ----- MOCK CLASSES -----
 

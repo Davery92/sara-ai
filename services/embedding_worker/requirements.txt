@@ -1,0 +1,12 @@
+# NATS
+nats-py
+# HTTP client
+httpx
+# Async Postgres + SQLAlchemy
+sqlalchemy[asyncio]
+asyncpg
+# pgvector support
+sqlalchemy-vector
+# For loading .env
+python-dotenv
+

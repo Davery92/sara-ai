@@ -74,12 +74,14 @@ async def verify(
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
-    """
-    Attaches request.state.user to downstream handlers, or returns 401.
-    """
-    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint):
-        # skip auth on public paths
-        if request.url.path.startswith(("/healthz", "/auth", "/metrics")):
+    async def dispatch(self, request, call_next):
+        if request.url.path.startswith((
+            "/healthz", "/metrics",
+            "/signup",  "/auth/signup",
+            "/login",   "/auth/login",
+            "/refresh", "/auth/refresh",   # ← add these two
+            "/v1/search",
+        )):
             return await call_next(request)
         try:
             creds = await security(request)

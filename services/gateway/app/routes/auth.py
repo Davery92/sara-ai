@@ -1,7 +1,12 @@
+# services/gateway/app/routes/auth.py
+
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 import jwt
-from ..auth import _SECRET, _ALG, login, get_redis
+from ..auth import _SECRET, _ALG, login as issue_tokens
+from ..redis_client import get_redis  # Correct import
+from fastapi import status
+
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -16,10 +21,23 @@ class TokenOut(BaseModel):
 class RefreshIn(BaseModel):
     refresh_token: str
 
+class SignupRequest(BaseModel):
+    username: str
+    password: str
+
+@router.post("/signup", status_code=status.HTTP_201_CREATED)
+async def signup(req: SignupRequest):
+    # TODO: persist the new user & hash the password
+    # For now we just return a token so you can test search:
+    tokens = issue_tokens(req.username)
+    return tokens
+
+@router.post("/auth/login") 
 @router.post("/login", response_model=TokenOut)
 async def login_route(payload: LoginIn):
-    return login(payload.username)
+    return issue_tokens(payload.username)
 
+@router.post("/auth/refresh") 
 @router.post("/refresh", response_model=TokenOut)
 async def refresh_route(payload: RefreshIn):
     # In-memory blacklist for testing (since Redis might not be available)
@@ -50,8 +68,10 @@ async def refresh_route(payload: RefreshIn):
         else:
             # If Redis is not available, use in-memory blacklist
             refresh_route._blacklist.add(old_jti)
-    except Exception:
+    except Exception as e:
         # If Redis fails, use in-memory blacklist
         refresh_route._blacklist.add(old_jti)
+        import logging
+        logging.warning(f"Redis error (falling back to in-memory blacklist): {e}")
 
-    return login(token_data["sub"])
+    return issue_tokens(token_data["sub"])

@@ -12,4 +12,4 @@ class Message(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
     text = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
-    embedding = Column(Vector(dim=768), nullable=True) # stub for pgvector
+    embedding = Column(Vector(dim=1024), nullable=True) # stub for pgvector

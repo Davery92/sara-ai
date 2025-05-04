@@ -1,7 +1,8 @@
 import os
 import httpx
 
-LLM_BASE_URL = os.environ["LLM_BASE_URL"].rstrip("/")
+# Use .get() with a default value instead of direct access
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
 
 async def compute_embedding(text: str) -> list[float]:
     """Call Ollama to get an embedding vector for the given text."""

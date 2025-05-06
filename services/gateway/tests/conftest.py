@@ -105,7 +105,7 @@ class MockResult:
         """Return all rows."""
         return self.rows
 
-class TestRow:
+class _TestRow:
     """Mock row for test results."""
     def __init__(self, id, text):
         self.id = id
@@ -142,7 +142,7 @@ class MockAsyncSession:
         
         result = []
         for msg in self.messages[:limit]:
-            result.append(TestRow(msg["id"], msg["text"]))
+            result.append(_TestRow(msg["id"], msg["text"]))
         return MockResult(result)
     
     async def commit(self):

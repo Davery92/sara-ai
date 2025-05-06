@@ -15,6 +15,7 @@ from .routes.chat_queue import router as chat_queue_router
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
 from .metrics import router as metrics_router
 from .routes.search import router as search_router
+from .routes.memory import router as memory_router
 
 
 @asynccontextmanager
@@ -53,3 +54,4 @@ app.include_router(messages_router)
 app.include_router(ws_router)
 app.include_router(chat_queue_router, prefix="/v1")
 app.include_router(search_router)
+app.include_router(memory_router)

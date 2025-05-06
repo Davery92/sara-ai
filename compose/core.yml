@@ -183,8 +183,37 @@ services:
       METRICS_PORT:  8000
     networks: [ backend ]
     
-  
+  # ─────────────────────── Memory‑Rollup Worker (Temporal) ───────────────────────
+  memory_worker:
+    container_name: sara_memory_worker
+    build:
+      context: ..
+      dockerfile: workflows/memory_worker/Dockerfile
+    command: ["python", "-m", "worker"] 
+    depends_on:
+      redis:    { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      temporal: { condition: service_started }
+    environment:
+      <<: *common-env
+      # (optional) tweak schedule or limits via env
+      REDIS_CONV_TTL_MIN: "60"
+      HOT_MSG_LIMIT:      "200"
+      RAW_MEMORY_SUBJECT: "memory.raw"
+    networks: [ backend ]
 
+  scripts:
+    build:
+      context: ..
+      dockerfile: services/gateway/Dockerfile  # reuse gateway's Dockerfile
+    volumes:
+      - .:/app
+    command: tail -f /dev/null  # keep container running for `exec`
+    depends_on:
+      - redis
+      - postgres
+    environment:
+      - PYTHONPATH=/app  # ensure absolute imports work
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:
@@ -258,6 +287,7 @@ services:
     environment:
       <<: *common-env
       ENV: prod
+      LLM_BASE_URL: "http://100.104.68.115:11434"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: "${POSTGRES_USER}"

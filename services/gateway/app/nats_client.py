@@ -1,8 +1,9 @@
 import os, uuid, asyncio, json, logging, time
 from nats.aio.client import Client as NATS
+from ..redis_utils import push_chat_chunk 
 
 ACK_EVERY = int(os.getenv("ACK_EVERY", 10))   # send an ACK every N chunks
-
+RAW_SUBJECT = os.getenv("RAW_MEMORY_SUBJECT", "memory.raw")
 log = logging.getLogger("gateway.nats")
 
 class GatewayNATS:
@@ -20,7 +21,25 @@ class GatewayNATS:
 
         # 1⃣ subscribe to both reply & ack subjects
         async def on_chunk(msg):
-            await ws.send_text(msg.data.decode())
+            # decode once
+            chunk_json = msg.data.decode()
+
+            # 👉 1. stream to browser
+            await ws.send_text(chunk_json)
+
+            # 👉 2. stuff into Redis hot buffer  (summary roll‑up will fetch)
+            try:
+                chunk = json.loads(chunk_json)
+                await push_chat_chunk(chunk["room_id"], chunk)
+            except Exception as e:
+                log.warning("failed to cache chunk in redis: %s", e)
+
+            # 👉 3. (optional) fan‑out to embedding_worker so assistant
+            #      replies land in Postgres too
+            try:
+                await self.nc.publish(RAW_SUBJECT, msg.data)
+            except Exception as e:
+                log.warning("failed to fwd chunk to %s: %s", RAW_SUBJECT, e)
 
         async def on_ack(msg):
             pass  # we don't need the body – just receipt means worker is alive
@@ -35,7 +54,9 @@ class GatewayNATS:
             reply=reply_subject,
             headers={"Ack": ack_subject.encode()}
         )
-
+       
+        await push_chat_chunk(payload["room_id"], payload)
+        await self.nc.publish(RAW_SUBJECT, json.dumps(payload).encode())
         # 3⃣ relay chunks until WS closes or worker stops
         chunk_counter = 0
         try:

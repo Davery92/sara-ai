@@ -16,7 +16,7 @@ async def get_redis() -> redis.Redis | None:
     
     if _redis is None:
         try:
-            host = os.getenv("REDIS_HOST", "redis")
+            host = os.getenv("REDIS_HOST", "localhost")
             port = os.getenv("REDIS_PORT", "6379")
             
             _redis = redis.from_url(

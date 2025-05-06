@@ -16,8 +16,21 @@ load_dotenv(os.path.join(repo_root, ".env"))
 # ─── SQLAlchemy + pgvector imports ─────────────────────────────────────────────
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
-# your Gateway’s models:
-from services.gateway.app.db.models import Message, Base
+# your Gateway's models:
+# Try different import paths based on environment
+try:
+    # First try direct imports (for Docker)
+    from app.db.models import Message, Base
+except ImportError:
+    try:
+        # Then try local project structure (for development)
+        from services.gateway.app.db.models import Message, Base
+    except ImportError:
+        # Dynamic import as last resort
+        import importlib
+        gateway_models = importlib.import_module("app.db.models")
+        Message = gateway_models.Message
+        Base = gateway_models.Base
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ─── NATS + HTTP client imports ────────────────────────────────────────────────

@@ -5,6 +5,7 @@ import pytest_asyncio
 from typing import AsyncGenerator, Dict, Any, Optional, List
 from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import UUID, uuid4
+from httpx import ASGITransport, AsyncClient
 
 # Add the project root to the path so imports work correctly
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
@@ -102,7 +103,7 @@ class MockResult:
         """Return all rows."""
         return self.rows
 
-class TestRow:
+class _TestRow:
     """Mock row for test results."""
     def __init__(self, id, text):
         self.id = id
@@ -139,7 +140,7 @@ class MockAsyncSession:
         
         result = []
         for msg in self.messages[:limit]:
-            result.append(TestRow(msg["id"], msg["text"]))
+            result.append(_TestRow(msg["id"], msg["text"]))
         return MockResult(result)
     
     async def commit(self):
@@ -282,3 +283,9 @@ def env_setup(monkeypatch):
 @pytest.fixture
 def anyio_backend():
     return "trio"
+
+# New fixture for testing with httpx
+@pytest_asyncio.fixture
+async def httpx_client():
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        yield client

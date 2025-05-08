@@ -17,6 +17,7 @@ LLM_WS_URL   = os.getenv("LLM_WS_URL", "ws://llm_proxy:8000/v1/stream")
 GATEWAY_URL  = os.getenv("GATEWAY_URL", "http://gateway:8000")
 METRICS_PORT = int(os.getenv("METRICS_PORT", 8000))
 MEMORY_TOP_N = int(os.getenv("MEMORY_TOP_N", 3))  # Number of memories to include in prompt
+DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "sara_default")
 
 # System prompt templates
 SYS_CORE = os.getenv("SYSTEM_PROMPT", "You are a helpful AI assistant.")
@@ -49,6 +50,14 @@ MEMORY_FAILURE = Counter(
     "dw_memory_failure_total",
     "Failed memory retrievals",
 )
+PERSONA_SUCCESS = Counter(
+    "dw_persona_success_total",
+    "Successful persona retrievals",
+)
+PERSONA_FAILURE = Counter(
+    "dw_persona_failure_total",
+    "Failed persona retrievals",
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("dialogue_worker")
@@ -78,49 +87,91 @@ async def get_memories(user_msg: str, room_id: str) -> list[str]:
         return []
 
 
-# ── Helper: build enhanced prompt with memories ────────────────────────────
-async def enhance_prompt_with_memories(payload: dict) -> dict:
-    """Add relevant memories to the prompt if available."""
-    # Extract user message and room_id
+# ── Helper: fetch persona from gateway ──────────────────────────────────
+async def get_persona_config(user_id: str = None) -> str:
+    """Fetch the persona configuration for the given user."""
+    try:
+        params = {}
+        if user_id:
+            params["user_id"] = user_id
+            
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{GATEWAY_URL}/v1/persona/config",
+                params=params,
+                timeout=5.0,
+            ) as resp:
+                if resp.status != 200:
+                    log.warning(f"Persona API returned status {resp.status}")
+                    PERSONA_FAILURE.inc()
+                    return SYS_CORE
+                
+                persona_data = await resp.json()
+                PERSONA_SUCCESS.inc()
+                return persona_data.get("content", SYS_CORE)
+    except Exception as e:
+        log.warning(f"Failed to retrieve persona: {e}")
+        PERSONA_FAILURE.inc()
+        return SYS_CORE
+
+
+# ── Helper: build enhanced prompt with memories and persona ───────────────
+async def enhance_prompt(payload: dict) -> dict:
+    """Add relevant memories and persona configuration to the prompt."""
+    # Extract user message, room_id, and user_id
     user_msg = payload.get("msg", "")
     room_id = payload.get("room_id", "")
+    user_id = payload.get("user_id", "")
     
-    if not user_msg or not room_id:
-        return payload  # Nothing to enhance
+    # Get persona for this user
+    persona_content = await get_persona_config(user_id)
     
-    # Query relevant memories
-    memories = await get_memories(user_msg, room_id)
+    # Query relevant memories if we have a room and message
+    memories = []
+    if user_msg and room_id:
+        memories = await get_memories(user_msg, room_id)
     
-    # Skip if no memories found
-    if not memories:
-        log.info(f"No memories found for room {room_id}")
-        return payload
+    # Build the enhanced system prompt
+    system_prompt = persona_content
     
-    # Add memories to the payload
-    memory_text = "\n\n".join([f"- {memory}" for memory in memories])
+    # Add memories if available
+    if memories:
+        memory_text = "\n\n".join([f"- {memory}" for memory in memories])
+        system_prompt = f"{system_prompt}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+    
+    # Add prompt version metadata
+    prompt_version = {
+        "version": "1.0",
+        "persona": user_id and "user_specific" or DEFAULT_PERSONA,
+        "has_memories": bool(memories),
+    }
     
     # Check if there's a messages or system_prompt field to enhance
     if "messages" in payload:
         # Find the system message if it exists
         for i, msg in enumerate(payload["messages"]):
             if msg.get("role") == "system":
-                # Append memories to existing system prompt
-                payload["messages"][i]["content"] = f"{msg['content']}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+                # Replace with our enhanced system prompt
+                payload["messages"][i]["content"] = system_prompt
                 break
         else:
             # No system message found, prepend one
             payload["messages"].insert(0, {
                 "role": "system", 
-                "content": f"{SYS_CORE}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+                "content": system_prompt
             })
+        
+        # Add metadata to the payload
+        payload["prompt_metadata"] = prompt_version
     else:
-        # Default behavior - add system prompt with memories
-        if "system_prompt" in payload:
-            payload["system_prompt"] = f"{payload['system_prompt']}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
-        else:
-            payload["system_prompt"] = f"{SYS_CORE}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+        # Default behavior - add system prompt
+        payload["system_prompt"] = system_prompt
+        payload["prompt_metadata"] = prompt_version
     
-    log.info(f"Enhanced prompt with {len(memories)} memories for room {room_id}")
+    log.info(f"Enhanced prompt with persona for user {user_id or 'default'}")
+    if memories:
+        log.info(f"Enhanced prompt with {len(memories)} memories for room {room_id}")
+    
     return payload
 
 
@@ -182,8 +233,8 @@ async def on_request(msg, nc):
         log.error("missing Ack header – refusing request")
         return
 
-    # Enhance the prompt with relevant memories
-    enhanced_payload = await enhance_prompt_with_memories(payload)
+    # Enhance the prompt with persona and memories
+    enhanced_payload = await enhance_prompt(payload)
 
     await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
 

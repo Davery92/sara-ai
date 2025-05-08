@@ -14,7 +14,13 @@ from jetstream import consume                # durable pull-consumer helper
 # ── Config ────────────────────────────────────────────────────────────────
 NATS_URL     = os.getenv("NATS_URL", "nats://nats:4222")
 LLM_WS_URL   = os.getenv("LLM_WS_URL", "ws://llm_proxy:8000/v1/stream")
+GATEWAY_URL  = os.getenv("GATEWAY_URL", "http://gateway:8000")
 METRICS_PORT = int(os.getenv("METRICS_PORT", 8000))
+MEMORY_TOP_N = int(os.getenv("MEMORY_TOP_N", 3))  # Number of memories to include in prompt
+
+# System prompt templates
+SYS_CORE = os.getenv("SYSTEM_PROMPT", "You are a helpful AI assistant.")
+MEMORY_TEMPLATE = os.getenv("MEMORY_TEMPLATE", "Previous conversation summaries:\n{memories}")
 
 ACK_TIMEOUT  = 3           # seconds without +ACK before cancelling the stream
 ACK_EVERY    = 10          # send an ACK to the client after this many chunks
@@ -35,9 +41,87 @@ WS_LATENCY = Histogram(
     "Latency for each chunk NATS → LLM proxy",
     buckets=(0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 2),
 )
+MEMORY_SUCCESS = Counter(
+    "dw_memory_success_total",
+    "Successful memory retrievals",
+)
+MEMORY_FAILURE = Counter(
+    "dw_memory_failure_total",
+    "Failed memory retrievals",
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("dialogue_worker")
+
+
+# ── Helper: query memories from gateway ───────────────────────────────────
+async def get_memories(user_msg: str, room_id: str) -> list[str]:
+    """Query relevant memories for the given message and room."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                f"{GATEWAY_URL}/v1/memory/query",
+                json={"query": user_msg, "room_id": room_id, "top_n": MEMORY_TOP_N},
+                timeout=5.0,
+            ) as resp:
+                if resp.status != 200:
+                    log.warning(f"Memory API returned status {resp.status}")
+                    MEMORY_FAILURE.inc()
+                    return []
+                
+                memories = await resp.json()
+                MEMORY_SUCCESS.inc()
+                return [memory["text"] for memory in memories]
+    except Exception as e:
+        log.warning(f"Failed to retrieve memories: {e}")
+        MEMORY_FAILURE.inc()
+        return []
+
+
+# ── Helper: build enhanced prompt with memories ────────────────────────────
+async def enhance_prompt_with_memories(payload: dict) -> dict:
+    """Add relevant memories to the prompt if available."""
+    # Extract user message and room_id
+    user_msg = payload.get("msg", "")
+    room_id = payload.get("room_id", "")
+    
+    if not user_msg or not room_id:
+        return payload  # Nothing to enhance
+    
+    # Query relevant memories
+    memories = await get_memories(user_msg, room_id)
+    
+    # Skip if no memories found
+    if not memories:
+        log.info(f"No memories found for room {room_id}")
+        return payload
+    
+    # Add memories to the payload
+    memory_text = "\n\n".join([f"- {memory}" for memory in memories])
+    
+    # Check if there's a messages or system_prompt field to enhance
+    if "messages" in payload:
+        # Find the system message if it exists
+        for i, msg in enumerate(payload["messages"]):
+            if msg.get("role") == "system":
+                # Append memories to existing system prompt
+                payload["messages"][i]["content"] = f"{msg['content']}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+                break
+        else:
+            # No system message found, prepend one
+            payload["messages"].insert(0, {
+                "role": "system", 
+                "content": f"{SYS_CORE}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+            })
+    else:
+        # Default behavior - add system prompt with memories
+        if "system_prompt" in payload:
+            payload["system_prompt"] = f"{payload['system_prompt']}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+        else:
+            payload["system_prompt"] = f"{SYS_CORE}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+    
+    log.info(f"Enhanced prompt with {len(memories)} memories for room {room_id}")
+    return payload
 
 
 # ── Helper: open a streaming request to llm_proxy ─────────────────────────
@@ -98,12 +182,15 @@ async def on_request(msg, nc):
         log.error("missing Ack header – refusing request")
         return
 
-    await forward_to_llm_proxy(payload, reply_subject, ack_subject, nc)
+    # Enhance the prompt with relevant memories
+    enhanced_payload = await enhance_prompt_with_memories(payload)
+
+    await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
 
 
 # ── Main event-loop ───────────────────────────────────────────────────────
 async def main():
-    # Expose /metrics before connecting so Prom doesn’t scrape an empty target
+    # Expose /metrics before connecting so Prom doesn't scrape an empty target
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics on :%s/metrics", METRICS_PORT)
 

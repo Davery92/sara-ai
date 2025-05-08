@@ -16,6 +16,7 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorReg
 from .metrics import router as metrics_router
 from .routes.search import router as search_router
 from .routes.memory import router as memory_router
+from app.routes import api, auth, chat_queue, memory, search, messages, persona
 
 
 @asynccontextmanager
@@ -33,10 +34,10 @@ app = FastAPI(
 app.include_router(metrics_router)
 
 # ─── Public health check ─────────────────────────────────────────────────────
-app.include_router(api_router)
+app.include_router(api.router)
 
 # ─── Authentication endpoints ─────────────────────────────────────────────────
-app.include_router(auth_router)
+app.include_router(auth.router)
 
 # ─── Protected "whoami" ───────────────────────────────────────────────────────
 @app.get("/auth/me")
@@ -49,9 +50,10 @@ async def me(payload: dict = Depends(verify)):
 app.include_router(chat_router)
 
 # ─── Message queueing stub ────────────────────────────────────────────────────
-app.include_router(messages_router)
+app.include_router(messages.router)
 
 app.include_router(ws_router)
-app.include_router(chat_queue_router, prefix="/v1")
-app.include_router(search_router)
-app.include_router(memory_router)
+app.include_router(chat_queue.router, prefix="/v1")
+app.include_router(search.router)
+app.include_router(memory.router)
+app.include_router(persona.router)  # Add our new persona router

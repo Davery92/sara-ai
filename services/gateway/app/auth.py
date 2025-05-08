@@ -73,6 +73,16 @@ async def verify(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, f"Invalid token: {e}")
 
 
+async def get_user_id(payload: dict = Depends(verify)) -> str:
+    """
+    Dependency that extracts the user ID from the JWT token.
+    
+    Returns the user ID ('sub' field) from the JWT payload.
+    If no valid token is present, returns None.
+    """
+    return payload.get("sub")
+
+
 class AuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         if request.url.path.startswith((

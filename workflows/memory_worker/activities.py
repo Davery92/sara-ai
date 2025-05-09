@@ -1,3 +1,13 @@
+# Add Python path setup at the top
+import sys
+import os
+from pathlib import Path
+
+# Add the project root to the Python path
+project_root = Path(__file__).parent.parent.parent.absolute()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 from temporalio import activity
 import json, uuid, importlib, os, httpx, logging
 from typing import List, Dict, Any, Optional
@@ -6,26 +16,12 @@ from typing import List, Dict, Any, Optional
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("memory_worker")
 
-# Try different import paths based on environment
-try:
-    # First try direct imports (for Docker)
-    from app.redis_client import get_redis
-    from app.db.session import AsyncSessionLocal
-except ImportError:
-    # Then try local project structure (for development)
-    from services.gateway.app.redis_client import get_redis
-    from services.gateway.app.db.session import AsyncSessionLocal
+# Use local redis client instead of gateway's
+from redis_client import get_redis
+from services.gateway.app.db.session import AsyncSessionLocal
 
-# Import db_upsert with the same approach
-try:
-    from common.db_upsert import upsert_memory
-except ImportError:
-    try:
-        from services.common.db_upsert import upsert_memory
-    except ImportError:
-        # Dynamic import as last resort
-        common_module = importlib.import_module("services.common.db_upsert")
-        upsert_memory = common_module.upsert_memory
+# Import db_upsert directly
+from services.common.db_upsert import upsert_memory
 
 # LLM base URL for API calls
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
@@ -36,12 +32,18 @@ API_TIMEOUT = float(os.environ.get("API_TIMEOUT", "30.0"))
 @activity.defn
 async def list_rooms_with_hot_buffer() -> list[str]:
     r = await get_redis()
+    if not r:
+        log.error("Failed to connect to Redis")
+        return []
     keys = await r.keys("room:*:messages")
-    return [k.decode().split(":")[1] for k in keys]
+    return [k.split(":")[1] for k in keys]
 
 @activity.defn
 async def fetch_buffer(room_id: str) -> list[dict]:
     r = await get_redis()
+    if not r:
+        log.error("Failed to connect to Redis")
+        return []
     raw = await r.lrange(f"room:{room_id}:messages", 0, -1)
     return [json.loads(x) for x in reversed(raw)]
 
@@ -130,8 +132,11 @@ async def upsert_summary(room_id: str, summary: str, embedding: list[float]):
         
         # Clear the message buffer after successful save
         r = await get_redis()
-        await r.delete(f"room:{room_id}:messages")
-        log.info(f"Cleared message buffer for room {room_id}")
+        if r:
+            await r.delete(f"room:{room_id}:messages")
+            log.info(f"Cleared message buffer for room {room_id}")
+        else:
+            log.error("Failed to connect to Redis to clear message buffer")
     except Exception as e:
         log.error(f"Error upserting summary: {e}")
         raise

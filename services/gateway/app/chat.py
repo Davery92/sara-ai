@@ -1,31 +1,108 @@
 # services/gateway/app/chat.py
-import os, httpx, jwt, json
-from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, status
+import os, httpx, jwt, json, logging, traceback
+from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, status, HTTPException, Depends
 from fastapi.responses import StreamingResponse
+from .auth import verify
 
 router = APIRouter(prefix="/v1")
+
+# Set up logging
+log = logging.getLogger("gateway.chat")
+logging.basicConfig(level=logging.INFO)
 
 OLLAMA_URL = os.getenv("OLLAMA_BASE_URL", "http://100.104.68.115:11434")
 JWT_SECRET = os.getenv("JWT_SECRET", "dev-secret-change-me")
 
 @router.post("/chat/completions")
-async def completions(req: Request):
+async def completions(req: Request, auth_payload: dict = Depends(verify)):
+    # User is authenticated since verify dependency passed
+    user = auth_payload["sub"]
+    print(f"✅ Chat completion request from user: {user}")
+    
     # read body & headers up front
     body = await req.body()
+    body_str = body.decode('utf-8')
+    log.info(f"Request body: {body_str[:200]}...")
+    
+    # Check if we have a valid model specified
+    try:
+        body_json = json.loads(body_str)
+        model = body_json.get('model', 'unknown')
+        log.info(f"Using model: {model}")
+    except Exception as e:
+        log.error(f"Failed to parse body JSON: {e}")
+        model = 'unknown'
+    
     headers = {k: v for k, v in req.headers.items() if k.lower() != "host"}
+    log.info(f"Headers: {headers}")
+    log.info(f"Forwarding to Ollama URL: {OLLAMA_URL}/v1/chat/completions")
 
     async def iterator():
         # client now lives for the lifetime of this iterator
-        async with httpx.AsyncClient(timeout=None) as client:
-            async with client.stream(
-                "POST",
-                f"{OLLAMA_URL}/v1/chat/completions",
-                content=body,
-                headers=headers,
-            ) as upstream:
-                async for chunk in upstream.aiter_raw():
-                    yield chunk
+        log.info("Creating HTTP client for streaming response")
+        async with httpx.AsyncClient(timeout=60.0) as client:  # Set a reasonable timeout
+            try:
+                log.info("Starting streaming request to Ollama")
+                async with client.stream(
+                    "POST",
+                    f"{OLLAMA_URL}/v1/chat/completions",
+                    content=body,
+                    headers=headers,
+                    timeout=60.0  # Set a timeout for the request too
+                ) as upstream:
+                    log.info(f"Ollama response status: {upstream.status_code}")
+                    if upstream.status_code != 200:
+                        error_text = await upstream.aread()
+                        log.error(f"Ollama error {upstream.status_code}: {error_text}")
+                        # Create a properly formatted error response
+                        error_json = {
+                            "error": {
+                                "message": f"Error from Ollama: {error_text}",
+                                "type": "ollama_error",
+                                "code": upstream.status_code
+                            }
+                        }
+                        yield json.dumps(error_json).encode('utf-8')
+                        return
+                        
+                    chunk_count = 0
+                    async for chunk in upstream.aiter_raw():
+                        chunk_count += 1
+                        if chunk_count <= 3 or chunk_count % 10 == 0:
+                            log.info(f"Received chunk #{chunk_count}: {chunk[:50]}")
+                        yield chunk
+                    
+                    log.info(f"Streaming complete, sent {chunk_count} chunks")
+            except httpx.TimeoutException:
+                log.error(f"Request to Ollama timed out")
+                error_json = {
+                    "error": {
+                        "message": "Request to Ollama timed out",
+                        "type": "timeout_error"
+                    }
+                }
+                yield json.dumps(error_json).encode('utf-8')
+            except httpx.HTTPError as e:
+                log.error(f"HTTP error connecting to Ollama: {e}")
+                error_json = {
+                    "error": {
+                        "message": f"HTTP error: {str(e)}",
+                        "type": "http_error"
+                    }
+                }
+                yield json.dumps(error_json).encode('utf-8')
+            except Exception as e:
+                log.error(f"Error streaming from Ollama: {e}")
+                traceback.print_exc()
+                error_json = {
+                    "error": {
+                        "message": f"Error: {str(e)}",
+                        "type": "server_error"
+                    }
+                }
+                yield json.dumps(error_json).encode('utf-8')
 
+    log.info("Returning StreamingResponse")
     return StreamingResponse(iterator(), media_type="application/json")
 
 @router.websocket("/chat/completions/ws")

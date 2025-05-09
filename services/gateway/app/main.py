@@ -1,7 +1,15 @@
 # services/gateway/app/main.py
+# Fix imports before anything else
+from pathlib import Path
+import sys
+
+# Add both the app dir and project root to Python path
+sys.path.insert(0, str(Path(__file__).parent.absolute()))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.absolute()))
 
 from fastapi import FastAPI, Depends, Response
 from fastapi.middleware import Middleware
+from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from contextlib import asynccontextmanager
 
 from .auth import auth_middleware, verify
@@ -16,7 +24,8 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorReg
 from .metrics import router as metrics_router
 from .routes.search import router as search_router
 from .routes.memory import router as memory_router
-from app.routes import api, auth, chat_queue, memory, search, messages, persona
+# Use relative imports for local routes instead of absolute app imports
+from .routes import api, auth, chat_queue, memory, search, messages, persona
 
 
 @asynccontextmanager
@@ -31,6 +40,16 @@ app = FastAPI(
     middleware=[Middleware(auth_middleware)],
     lifespan=lifespan
 )
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins (you might want to restrict this in production)
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
 app.include_router(metrics_router)
 
 # ─── Public health check ─────────────────────────────────────────────────────

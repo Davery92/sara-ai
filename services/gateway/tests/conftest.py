@@ -6,12 +6,13 @@ from typing import AsyncGenerator, Dict, Any, Optional, List
 from unittest.mock import MagicMock, AsyncMock, patch
 from uuid import UUID, uuid4
 from dotenv import load_dotenv
+from pathlib import Path
 
 # Add the project root to the path so imports work correctly
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 # Import the application
-from app.main import app
+from services.gateway.app.main import app
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -161,27 +162,27 @@ async def redis_mock():
     mock_redis = MockRedis()
     
     # Import and patch the get_redis function
-    from app.redis_client import get_redis as original_get_redis
+    from services.gateway.app.redis_client import get_redis as original_get_redis
     
     # Create patched function
     async def mock_get_redis():
         return mock_redis
     
     # Apply patch
-    import app.redis_client
-    app.redis_client.get_redis = mock_get_redis
+    import services.gateway.app.redis_client
+    services.gateway.app.redis_client.get_redis = mock_get_redis
     
     # If there are other modules importing get_redis directly, patch those too
     try:
-        import app.auth
-        app.auth.get_redis = mock_get_redis
+        import services.gateway.app.auth
+        services.gateway.app.auth.get_redis = mock_get_redis
     except (ImportError, AttributeError):
         pass
     
     yield mock_redis
     
     # Restore original function after test
-    app.redis_client.get_redis = original_get_redis
+    services.gateway.app.redis_client.get_redis = original_get_redis
 
 # Mock embeddings function
 @pytest_asyncio.fixture
@@ -193,7 +194,7 @@ async def mock_embeddings(monkeypatch):
         return [0.1] * 1024
     
     # Apply patch
-    from app.utils import embeddings
+    from services.gateway.app.utils import embeddings
     original_compute_embedding = embeddings.compute_embedding
     monkeypatch.setattr(embeddings, "compute_embedding", mock_compute_embedding)
     
@@ -234,17 +235,17 @@ async def override_get_session(db_session):
         yield db_session
     
     # Apply override
-    from app.db.session import get_session
-    original_get_session = app.dependency_overrides.get(get_session, get_session)
-    app.dependency_overrides[get_session] = mock_get_session
+    from services.gateway.app.db.session import get_session
+    original_get_session = services.gateway.app.dependency_overrides.get(get_session, get_session)
+    services.gateway.app.dependency_overrides[get_session] = mock_get_session
     
     yield
     
     # Restore original
     if original_get_session == get_session:
-        del app.dependency_overrides[get_session]
+        del services.gateway.app.dependency_overrides[get_session]
     else:
-        app.dependency_overrides[get_session] = original_get_session
+        services.gateway.app.dependency_overrides[get_session] = original_get_session
 
 # Mock pgvector modules
 @pytest.fixture(autouse=True)
@@ -259,8 +260,8 @@ def mock_pgvector():
     sys.modules['pgvector.sqlalchemy'] = mock_vector_module
     
     # Also patch the Message model's embedding attribute
-    with patch('app.db.models.Vector', MockVector):
-        from app.db.models import Message
+    with patch('services.gateway.app.db.models.Vector', MockVector):
+        from services.gateway.app.db.models import Message
         original_embedding = Message.embedding
         
         # Create a mockable embedding attribute

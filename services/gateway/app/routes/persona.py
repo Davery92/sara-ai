@@ -3,8 +3,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
 from services.common.persona_service import get_persona_service, PersonaService
-from app.redis_client import get_redis
-from app.auth import get_user_id
+from ..redis_client import get_redis
+from ..auth import get_user_id
 
 router = APIRouter(prefix="/v1/persona", tags=["persona"])
 

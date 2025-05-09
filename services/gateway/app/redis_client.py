@@ -16,11 +16,15 @@ async def get_redis() -> redis.Redis | None:
     
     if _redis is None:
         try:
-            host = os.getenv("REDIS_HOST", "localhost")
+            # In Docker environment, use container name; otherwise use localhost
+            host = os.getenv("REDIS_HOST", "redis")  # Default to 'redis' container name
             port = os.getenv("REDIS_PORT", "6379")
             
+            redis_url = f"redis://{host}:{port}"
+            logger.debug(f"Connecting to Redis at {redis_url}")
+            
             _redis = redis.from_url(
-                f"redis://{host}:{port}",
+                redis_url,
                 encoding="utf-8",
                 decode_responses=True,
                 socket_timeout=5,

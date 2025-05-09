@@ -1,6 +1,6 @@
 import os, uuid, asyncio, json, logging, time
 from nats.aio.client import Client as NATS
-from ..redis_utils import push_chat_chunk 
+from .redis_utils import push_chat_chunk 
 
 ACK_EVERY = int(os.getenv("ACK_EVERY", 10))   # send an ACK every N chunks
 RAW_SUBJECT = os.getenv("RAW_MEMORY_SUBJECT", "memory.raw")

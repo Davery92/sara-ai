@@ -1,3 +1,13 @@
+# Add Python path setup at the top
+import sys
+import os
+from pathlib import Path
+
+# Add the project root to the Python path
+project_root = Path(__file__).parent.parent.parent.absolute()
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+
 import pgvector.sqlalchemy
 from temporalio.client import Client
 from temporalio.worker import Worker

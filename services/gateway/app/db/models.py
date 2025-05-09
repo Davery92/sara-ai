@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Enum, Index, Text, DateTime
+from sqlalchemy import Column, Enum, Index, Text, DateTime, String
 from sqlalchemy.sql import func
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
@@ -38,5 +38,14 @@ class Message(Base):
     __table_args__ = (
         Index("ix_message_room_created", "room_id", "created_at"),
     )
+
+class User(Base):
+    __tablename__ = "users"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    username = Column(String(50), unique=True, nullable=False, index=True)
+    password_hash = Column(String(128), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
 # at bottom of models.py
-__all__ = ["Base", "Memory", "Message"]
+__all__ = ["Base", "Memory", "Message", "User"]

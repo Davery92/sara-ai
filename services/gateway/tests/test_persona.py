@@ -7,10 +7,14 @@ import jwt
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
+# Fix imports by using relative paths and adding project root to PYTHONPATH
+import sys
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
 from services.common.persona_service import PersonaService, get_persona_service
-from app.auth import get_user_id, _SECRET, _ALG
-from app.redis_client import get_redis
-from app.main import app
+from services.gateway.app.auth import get_user_id, _SECRET, _ALG
+from services.gateway.app.redis_client import get_redis
+from services.gateway.app.main import app
 
 # Mock user ID for authentication
 MOCK_USER_ID = "test-user-123"

@@ -146,9 +146,18 @@
         project_src: "{{ compose_compose_dir }}"
         files:
           - core.yml
+          - monitoring.yml
         project_name: sara
         state: absent
         remove_orphans: true
+
+    - name: Remove stray node-exporter container
+      community.docker.docker_container:
+        name: node-exporter
+        name: prometheus
+        name: grafana
+        state: absent
+        force_kill: true
 
     # ─── Deploy fresh Sara stack ────────────────────────────────────────────
     - name: Deploy / update stack
@@ -156,6 +165,7 @@
         project_src: "{{ compose_compose_dir }}"
         files:
           - core.yml
+          - monitoring.yml
         project_name: sara
         pull: always
         build: always

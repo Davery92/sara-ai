@@ -233,10 +233,17 @@ async def on_request(msg, nc):
         log.error("missing Ack header – refusing request")
         return
 
+    # NEW: guard against missing Auth
+    auth_token = (msg.headers or {}).get("Auth", "")
+    if not auth_token:
+        log.warning("rejecting msg: missing Auth header")
+        return
+
     # Enhance the prompt with persona and memories
     enhanced_payload = await enhance_prompt(payload)
 
     await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
+
 
 
 # ── Main event-loop ───────────────────────────────────────────────────────

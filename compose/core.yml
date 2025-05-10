@@ -1,4 +1,3 @@
-
 x-env: &common-env
   TZ: America/New_York
   PUID: 1000
@@ -180,6 +179,7 @@ services:
 
       NATS_URL:      nats://nats:4222
       LLM_WS_URL:    ws://llm_proxy:8000/v1/stream
+      GATEWAY_URL:   http://gateway:8000
       METRICS_PORT:  8000
     networks: [ backend ]
     
@@ -241,7 +241,7 @@ services:
       POSTGRES_DB:      "${POSTGRES_DB}"
       POSTGRES_USER:    "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-      # also for psycopg2’s PG* env vars
+      # also for psycopg2's PG* env vars
       PGHOST:           "postgres"
       PGPORT:           "5432"
       PGDATABASE:       "${POSTGRES_DB}"

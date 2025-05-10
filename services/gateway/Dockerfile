@@ -16,7 +16,9 @@ COPY services/gateway/main.py ./services/gateway/
 # Copy our shared NATS helpers so `services.common` exists
 COPY services/common ./services/common
 
-
+# Create personalities directory and copy persona files
+RUN mkdir -p /app/configs/personalities
+COPY configs/personalities/*.md /app/configs/personalities/
 
 # Use the correct module path to run the app
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

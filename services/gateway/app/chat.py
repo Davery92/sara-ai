@@ -24,16 +24,57 @@ async def completions(req: Request, auth_payload: dict = Depends(verify)):
     body_str = body.decode('utf-8')
     log.info(f"Request body: {body_str[:200]}...")
     
-    # Check if we have a valid model specified
+    # Make a copy of the headers
+    headers = {k.lower(): v for k, v in req.headers.items() if k.lower() != "host"}
+    
     try:
         body_json = json.loads(body_str)
         model = body_json.get('model', 'unknown')
         log.info(f"Using model: {model}")
+        
+        # Add user_id from auth token to the request body
+        # This ensures the dialogue worker can apply the appropriate persona
+        body_json["user_id"] = user
+        log.info(f"✅ Adding user_id: {user} to request for persona selection")
+        
+        # If no room_id is provided, use a default one
+        if "room_id" not in body_json:
+            room_id = f"chat-{user}"
+            body_json["room_id"] = room_id
+            log.info(f"✅ Adding room_id: {room_id} to request for context retrieval")
+        
+        # Check if we have a standard OpenAI-style messages array
+        messages = body_json.get("messages", [])
+        if messages:
+            # Check if there's already a system message
+            has_system = any(msg.get("role") == "system" for msg in messages)
+            
+            # Add debug info as first user message
+            first_user_msg = next((msg for msg in messages if msg.get("role") == "user"), None)
+            if first_user_msg:
+                user_content = first_user_msg.get("content", "")
+                
+                # Extract and log actual user message for debugging
+                log.info(f"User message: {user_content[:100]}...")
+                
+                # Set msg field for dialogue worker (used for memory retrieval)
+                body_json["msg"] = user_content
+                log.info(f"✅ Added 'msg' field for memory matching: {user_content[:50]}...")
+        
+        # Update the request body with our additions
+        modified_body = json.dumps(body_json).encode('utf-8')
+        
+        # Update Content-Length header to match the new body size
+        headers["content-length"] = str(len(modified_body))
+        log.info(f"✅ Updated Content-Length to {len(modified_body)} bytes")
+        
+        # Replace the original body with our modified version
+        body = modified_body
+        
     except Exception as e:
         log.error(f"Failed to parse body JSON: {e}")
         model = 'unknown'
     
-    headers = {k: v for k, v in req.headers.items() if k.lower() != "host"}
     log.info(f"Headers: {headers}")
     log.info(f"Forwarding to Ollama URL: {OLLAMA_URL}/v1/chat/completions")
 

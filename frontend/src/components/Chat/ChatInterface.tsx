@@ -30,8 +30,11 @@ const ChatInterface: React.FC = () => {
   const [selectedPersona, setSelectedPersona] = useState<string>('');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { user } = useAuth();
+  const { user, token } = useAuth();
   const currentAiMessageRef = useRef<Message | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const roomId = 'default-room'; // You might want to make this dynamic
+  const ackCounter = useRef(0);
 
   // Debug: Log message state when it changes
   useEffect(() => {
@@ -77,6 +80,70 @@ const ChatInterface: React.FC = () => {
     }
   }, [user]);
 
+  // Initialize WebSocket connection
+  useEffect(() => {
+    const connectWebSocket = () => {
+      const ws = new WebSocket(`ws://localhost:8000/v1/stream?token=${token}`);
+      
+      ws.onopen = () => {
+        console.log('WebSocket connected');
+      };
+
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.choices && data.choices[0]) {
+            const choice = data.choices[0];
+            if (choice.delta && choice.delta.content) {
+              // Update the last AI message with new content
+              setMessages(prevMessages => {
+                const lastMessage = prevMessages[prevMessages.length - 1];
+                if (lastMessage && !lastMessage.isUser) {
+                  return prevMessages.map((msg, idx) => 
+                    idx === prevMessages.length - 1 
+                      ? { ...msg, content: msg.content + choice.delta.content }
+                      : msg
+                  );
+                }
+                return prevMessages;
+              });
+
+              // Send ACK every 10 chunks
+              ackCounter.current++;
+              if (ackCounter.current % 10 === 0) {
+                ws.send('+ACK');
+              }
+            }
+          }
+        } catch (e) {
+          console.error('Error parsing WebSocket message:', e);
+        }
+      };
+
+      ws.onclose = () => {
+        console.log('WebSocket disconnected');
+        // Attempt to reconnect after a delay
+        setTimeout(connectWebSocket, 3000);
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      wsRef.current = ws;
+    };
+
+    if (token) {
+      connectWebSocket();
+    }
+
+    return () => {
+      if (wsRef.current) {
+        wsRef.current.close();
+      }
+    };
+  }, [token]);
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -119,9 +186,7 @@ const ChatInterface: React.FC = () => {
     
     if (!inputValue.trim() || isLoading) return;
     
-    // Create a unique ID for the user message with timestamp for extra uniqueness
     const userMsgId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-user`;
-    
     const userMessage: Message = {
       id: userMsgId,
       content: inputValue.trim(),
@@ -129,99 +194,40 @@ const ChatInterface: React.FC = () => {
       timestamp: new Date(),
     };
     
-    // First, set ONLY the user message
-    console.log('Adding user message:', userMessage);
+    // Add user message
     setMessages(prevMessages => [...prevMessages, userMessage]);
-    
-    // Clear input and set loading state
     setInputValue('');
     setIsLoading(true);
     setTokenError(false);
     
     try {
-      // Format message for the chat API
-      const apiMessages = [
-        { role: 'user', content: userMessage.content }
-      ];
+      // 1. First, enqueue the message via REST
+      await chatService.sendMessage(userMessage.content);
       
-      console.log("Sending chat request with messages:", apiMessages);
-      
-      // Wait briefly to ensure user message is rendered separately
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      // Create a unique ID for the AI message with timestamp for extra uniqueness
-      const aiMsgId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-ai`;
-      
-      // Create an empty AI message that will be updated with stream chunks
-      const aiMessage: Message = {
-        id: aiMsgId,
-        content: '',
-        isUser: false,  // Explicitly mark as AI message
-        timestamp: new Date(),
-      };
-      
-      // Add empty AI message that will be filled by streaming response
-      console.log('Adding AI message placeholder:', aiMessage);
-      
-      // Use a separate setMessages call for the AI message
-      setMessages(prevMessages => [...prevMessages, aiMessage]);
-      
-      // Use a separate reference for tracking the AI message ID
-      const aiMessageId = aiMsgId;
-      
-      // Use streaming API with proper content accumulation
-      let accumulatedContent = '';
-      
-      await chatService.sendChatCompletion(apiMessages, (chunk) => {
-        // Process streaming chunk
-        if (chunk.choices && chunk.choices[0]) {
-          const choice = chunk.choices[0];
-          
-          // Update current AI message content with new delta
-          if (choice.delta && choice.delta.content) {
-            // Append new content to accumulated content
-            accumulatedContent += choice.delta.content;
-            
-            // Debug log to track which message we're updating
-            console.log('Updating message ID:', aiMessageId, 'with new content');
-            
-            // Update ONLY the AI message with the accumulated content
-            setMessages(prevMessages => {
-              // Map through messages and only update the one matching our AI ID
-              return prevMessages.map(msg => {
-                if (msg.id === aiMessageId) {
-                  return {
-                    ...msg,
-                    content: accumulatedContent
-                  };
-                }
-                return msg;
-              });
-            });
-          }
-        }
-      });
-      
-    } catch (error) {
-      console.error('Error sending message:', error);
-      // Check if it's a token error (401)
-      const apiError = error as ApiError;
-      if (apiError.response && apiError.response.status === 401) {
-        setTokenError(true);
-      } else {
-        // Add detailed error message
-        const errorResponse = apiError.response?.data 
-          ? JSON.stringify(apiError.response.data, null, 2)
-          : apiError.message || 'Unknown error';
-        
-        const errorMessage: Message = {
-          id: `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-error`,
-          content: `Error communicating with the server (${apiError.response?.status || 'unknown status'}):\n\n${errorResponse}`,
+      // 2. Then send the message through WebSocket for streaming
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        const aiMsgId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-ai`;
+        const aiMessage: Message = {
+          id: aiMsgId,
+          content: '',
           isUser: false,
           timestamp: new Date(),
         };
-        setMessages(prevMessages => [...prevMessages, errorMessage]);
+        
+        setMessages(prevMessages => [...prevMessages, aiMessage]);
+        
+        wsRef.current.send(JSON.stringify({
+          model: 'qwen3:32b',
+          messages: [{ role: 'user', content: userMessage.content }],
+          stream: true,
+          room_id: roomId
+        }));
+      } else {
+        throw new Error('WebSocket not connected');
       }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setTokenError(true);
     } finally {
       setIsLoading(false);
     }

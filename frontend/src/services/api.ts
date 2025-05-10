@@ -145,36 +145,42 @@ export const authService = {
 
 // Chat service
 export const chatService = {
-  // Send a message
-  sendMessage: async (text: string) => {
-    return await api.post('/messages/', { text });
+  // Send a message to the queue endpoint
+  sendMessage: async (text: string, roomId: string = 'default-room') => {
+    const token = localStorage.getItem('accessToken');
+    return await api.post('/v1/chat/queue', { 
+      room_id: roomId,
+      msg: text 
+    }, {
+      headers: {
+        'Authorization': token ? `Bearer ${token}` : '',
+      }
+    });
   },
 
-  // Send chat completion
+  // Send chat completion via WebSocket
   sendChatCompletion: async (messages: any[], onStream?: (chunk: any) => void) => {
-    // Use the full URL path with domain to bypass proxy issues
-    // Explicitly include the authorization header for absolute URLs
     const token = localStorage.getItem('accessToken');
-    
+    if (!token) {
+      throw new Error('No authentication token available');
+    }
+
     // Extract user ID from JWT token
     let userId = null;
-    if (token) {
-      try {
-        // Simple JWT extraction (not full validation)
-        const base64Url = token.split('.')[1];
-        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-        const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
-          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-        }).join(''));
-        
-        const payload = JSON.parse(jsonPayload);
-        userId = payload.sub; // JWT subject field contains username/user_id
-        console.log('Extracted user ID from token:', userId);
-      } catch (e) {
-        console.error('Failed to extract user ID from token:', e);
-      }
+    try {
+      const base64Url = token.split('.')[1];
+      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+      const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
+        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+      }).join(''));
+      
+      const payload = JSON.parse(jsonPayload);
+      userId = payload.sub;
+      console.log('Extracted user ID from token:', userId);
+    } catch (e) {
+      console.error('Failed to extract user ID from token:', e);
     }
-    
+
     console.log("📤 Sending chat completion request:", { messages });
     
     // If there's a streaming callback, use streaming mode
@@ -184,68 +190,43 @@ export const chatService = {
       if (streamMode) {
         console.log("Using streaming mode");
         
-        // Simple, direct approach for handling Server-Sent Events
-        const response = await fetch('http://localhost:8000/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : '',
-          },
-          body: JSON.stringify({
-            model: 'qwen3:32b',
-            messages,
-            stream: true,
-            max_tokens: 2000,
-            // Include user_id but only for backend logging/routing
-            room_id: 'default-room',
-          }),
-        });
+        // Create WebSocket connection
+        const ws = new WebSocket(`ws://localhost:8000/v1/stream?token=${token}`);
+        
+        return new Promise((resolve, reject) => {
+          ws.onopen = () => {
+            console.log('WebSocket connected');
+            // Send the chat request
+            ws.send(JSON.stringify({
+              model: 'qwen3:32b',
+              messages,
+              stream: true,
+              max_tokens: 2000,
+              room_id: 'default-room',
+            }));
+          };
 
-        if (!response.ok) {
-          throw new Error(`HTTP error! status: ${response.status}`);
-        }
-        
-        const reader = response.body?.getReader();
-        if (!reader) {
-          throw new Error('ReadableStream not supported');
-        }
-        
-        const decoder = new TextDecoder();
-        let partialLine = '';
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          // Decode the value to a string
-          const text = decoder.decode(value, { stream: true });
-          
-          // Process each chunk to handle SSE format - lines that start with "data: "
-          const lines = (partialLine + text).split('\n');
-          partialLine = lines.pop() || ''; // Save any partial line for next time
-          
-          for (const line of lines) {
-            const trimmedLine = line.trim();
-            
-            // Skip empty lines or DONE messages
-            if (trimmedLine === '' || trimmedLine === 'data: [DONE]') {
-              continue;
-            }
-            
-            // Extract the JSON data
-            if (trimmedLine.startsWith('data: ')) {
-              try {
-                const jsonStr = trimmedLine.slice(6); // Remove "data: " prefix
-                const jsonData = JSON.parse(jsonStr);
-                onStream(jsonData);
-              } catch (e) {
-                console.warn('Failed to parse JSON from SSE:', trimmedLine, e);
+          ws.onmessage = (event) => {
+            try {
+              const data = JSON.parse(event.data);
+              if (data.choices && data.choices[0]) {
+                onStream?.(data);
               }
+            } catch (e) {
+              console.warn('Failed to parse WebSocket message:', e);
             }
-          }
-        }
-        
-        return { data: { status: 'complete' } };
+          };
+
+          ws.onerror = (error) => {
+            console.error('WebSocket error:', error);
+            reject(error);
+          };
+
+          ws.onclose = () => {
+            console.log('WebSocket closed');
+            resolve({ data: { status: 'complete' } });
+          };
+        });
       } else {
         // Use non-streaming mode
         const response = await axios.post('http://localhost:8000/v1/chat/completions', 
@@ -254,14 +235,13 @@ export const chatService = {
             messages,
             stream: false,
             max_tokens: 2000,
-            // Include user_id for persona selection on backend
             user_id: userId,
-            room_id: 'default-room', // Use a default room ID for memory context
+            room_id: 'default-room',
           },
           {
             headers: {
               'Content-Type': 'application/json',
-              'Authorization': token ? `Bearer ${token}` : '',
+              'Authorization': `Bearer ${token}`,
             }
           }
         );

@@ -26,7 +26,7 @@ from services.common.db_upsert import upsert_memory
 # LLM base URL for API calls
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
-SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen2.5-0.5b")
+SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen3:32b")
 API_TIMEOUT = float(os.environ.get("API_TIMEOUT", "30.0"))
 
 @activity.defn
@@ -140,3 +140,26 @@ async def upsert_summary(room_id: str, summary: str, embedding: list[float]):
     except Exception as e:
         log.error(f"Error upserting summary: {e}")
         raise
+
+@activity.defn
+async def process_rooms(room_ids: list[str]):
+    """Process multiple rooms sequentially."""
+    log.info(f"Processing {len(room_ids)} rooms")
+    for room_id in room_ids:
+        try:
+            # Fetch buffer
+            chunks = await fetch_buffer(room_id)
+            if not chunks:
+                log.info(f"No chunks found for room {room_id}")
+                continue
+            
+            # Generate summary and embedding
+            text = "\n".join(c["text"] for c in chunks)
+            summary = await summarise_texts(chunks)
+            embedding = await embed_text(text)
+            
+            # Upsert to database
+            await upsert_summary(room_id, summary, embedding)
+            log.info(f"Successfully processed room {room_id}")
+        except Exception as e:
+            log.error(f"Error processing room {room_id}: {e}")

@@ -1,4 +1,4 @@
-x-env: &common-env
+x-env: &env
   TZ: America/New_York
   PUID: 1000
   PGID: 1000
@@ -9,12 +9,13 @@ services:
     image: redis:7.2-alpine
     container_name: sara_redis
     command: ["redis-server", "--appendonly", "yes"]
+    restart: unless-stopped
     ports:
       - "6379:6379"
-    environment: *common-env
+    environment: *env
     volumes:
       - redis-data:/data
-    networks: [ backend ]
+    networks: [backend]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -24,23 +25,19 @@ services:
   # ─────────────────────────────── NATS ───────────────────────────────
   nats:
     image: nats:2.10-alpine
-    container_name: sara_nats
     command: ["-js", "-c", "/etc/nats/js.conf", "-m", "8222"]
-      
-      
+    restart: unless-stopped
     volumes:
-      # Mount the stream definition read-only
       - ./nats/stream.conf:/etc/nats/js.conf:ro
     ports:
       - "4222:4222"                    # client / JetStream traffic
-    environment: *common-env
-    networks: [ backend ]
+    environment: *env
+    networks: [backend]
     healthcheck:
-      test: [ "CMD", "wget", "-qO-", "http://localhost:8222/healthz" ]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
-
 
   # ────────────────────────── PostgreSQL + pgvector ──────────────────────────
   postgres:
@@ -52,13 +49,13 @@ services:
     ports:
       - "5432:5432"
     environment:
-      <<: *common-env
+      <<: *env
       POSTGRES_USER: "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
       POSTGRES_DB: "${POSTGRES_DB}"
     volumes:
       - pg-data:/var/lib/postgresql/data
-    networks: [ backend ]
+    networks: [backend]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER}"]
       interval: 10s
@@ -66,14 +63,12 @@ services:
       retries: 5
 
   # ─────────────────────────────── Neo4j 5 ───────────────────────────────
-   
   neo4j:
     image: neo4j:5
     container_name: sara_neo4j
     restart: unless-stopped
     environment:
-      <<: *common-env
-      # the only two vars Neo4j really needs:
+      <<: *env
       NEO4J_AUTH: "neo4j/${NEO4J_PASSWORD}"
       NEO4J_dbms_default__listen__address: "0.0.0.0"
     volumes:
@@ -81,14 +76,13 @@ services:
     ports:
       - "7474:7474"    # HTTP UI
       - "7687:7687"    # Bolt
-    networks: [ backend ]
+    networks: [backend]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:7474"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 60s
-
 
   # ─────────────────────────────── MinIO ───────────────────────────────
   minio:
@@ -98,17 +92,15 @@ services:
     env_file:
       - ../.env
     environment:
-      <<: *common-env
+      <<: *env
       MINIO_ROOT_USER: "${MINIO_ROOT_USER}"
       MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD}"
-    command: server /data
+    command: ["server", "/data"]
     volumes:
       - minio-data:/data
     ports:
       - "9000:9000"
-    networks: [ backend ]
-    healthcheck: {}
-      
+    networks: [backend]
 
   # ────────────────────────── Temporal (all-in-one) ──────────────────────────
   temporal:
@@ -118,7 +110,7 @@ services:
     env_file:
       - ../.env
     environment:
-      <<: *common-env
+      <<: *env
       TEMPORAL_URL: "temporal:7233"
       DB: "postgres"
       DB_PORT: "5432"
@@ -129,14 +121,13 @@ services:
       - temporal-data:/data
     ports:
       - "7233:7233"
-    networks: [ backend ]
+    networks: [backend]
     healthcheck:
       test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 60s
-      
 
   # ─────────────────────────── Traefik edge router ───────────────────────────
   traefik:
@@ -146,42 +137,36 @@ services:
     env_file:
       - ../.env
     command:
-      # discover containers via labels
       - --providers.docker=true
-
-      # internal traffic for your services (no host-port)
       - --entrypoints.int.address=:8000   
-
-      # dashboard + API
       - --api.dashboard=true
       - --api.insecure=true          # serves dashboard on :8080
       - --metrics.prometheus=true
       - --metrics.prometheus.addrouterslabels=true
-
-      # ✗ REMOVE the ACME flags (NPM will handle TLS at the edge)
     ports:
-      - "8080:8080"                  # <-- the bit you asked for
+      - "8080:8080"                  # dashboard / API
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks: [ backend ]
+    networks: [backend]
 
   # ─────────────────────────────── Dialogue Worker ───────────────────────────────
-
   dialogue_worker:
     container_name: sara_dialogue_worker
     build:
       context: ../services/dialogue_worker     # ← narrow context
       dockerfile: Dockerfile 
-    depends_on: [ nats, llm_proxy ]
+    depends_on:
+      nats: { condition: service_healthy }
+      llm_proxy: { condition: service_started }
+    restart: unless-stopped
     environment:
       JWT_ALG: HS256
       JWT_SECRET: super-dev-secret-change-me
-
       NATS_URL:      nats://nats:4222
       LLM_WS_URL:    ws://llm_proxy:8000/v1/stream
       GATEWAY_URL:   http://gateway:8000
       METRICS_PORT:  8000
-    networks: [ backend ]
+    networks: [backend]
     
   # ─────────────────────── Memory‑Rollup Worker (Temporal) ───────────────────────
   memory_worker:
@@ -194,15 +179,17 @@ services:
       redis:    { condition: service_healthy }
       postgres: { condition: service_healthy }
       temporal: { condition: service_started }
+    restart: unless-stopped
     environment:
-      <<: *common-env
-      # (optional) tweak schedule or limits via env
+      <<: *env
       REDIS_CONV_TTL_MIN: "60"
       HOT_MSG_LIMIT:      "200"
       RAW_MEMORY_SUBJECT: "memory.raw"
-    networks: [ backend ]
+    networks: [backend]
 
+  # helper container for live coding / exec
   scripts:
+    profiles: [dev]
     build:
       context: ..
       dockerfile: services/gateway/Dockerfile  # reuse gateway's Dockerfile
@@ -214,69 +201,48 @@ services:
       - postgres
     environment:
       - PYTHONPATH=/app  # ensure absolute imports work
+    networks: [backend]
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:
-    profiles:
-      - ci
+    profiles: [ci]
     build:
       context: ..
       dockerfile: services/healthcheck/Dockerfile
     env_file:
       - ../.env
     environment:
-      <<: *common-env
-
+      <<: *env
       # Redis
       REDIS_HOST:       "redis"
       REDIS_PORT:       "6379"
-
       # NATS
       NATS_HOST:        "nats"
       NATS_PORT:        "4222"
-
       # PostgreSQL
       POSTGRES_HOST:    "postgres"
       POSTGRES_PORT:    "5432"
       POSTGRES_DB:      "${POSTGRES_DB}"
       POSTGRES_USER:    "${POSTGRES_USER}"
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
-      # also for psycopg2's PG* env vars
       PGHOST:           "postgres"
       PGPORT:           "5432"
       PGDATABASE:       "${POSTGRES_DB}"
       PGUSER:           "${POSTGRES_USER}"
       PGPASSWORD:       "${POSTGRES_PASSWORD}"
-
       # Neo4j
       NEO4J_HOST:       "neo4j"
       NEO4J_PORT:       "7474"
       NEO4J_USER:       "neo4j"
       NEO4J_PASSWORD:   "${NEO4J_PASSWORD}"
-
       # MinIO
       MINIO_HOST:       "minio"
       MINIO_PORT:       "9000"
       MINIO_ROOT_USER:      "${MINIO_ROOT_USER}"
       MINIO_ROOT_PASSWORD:  "${MINIO_ROOT_PASSWORD}"
-
       # Temporal
       TEMPORAL_HOST:    "temporal"
-      TEMPORAL_PORT:    "7233"
-
-    depends_on:
-      redis:    { condition: service_healthy }
-      nats:     { condition: service_healthy }
-      postgres: { condition: service_healthy }
-      neo4j:    { condition: service_healthy }
-      #minio:    { condition: service_healthy }
-      #temporal: { condition: service_healthy }
-
-    networks: [ backend ]
-
-
-
-
+      TEMPORAL:
   # ─────────────────────────────── Gateway API ───────────────────────────────
   gateway:
     build:
@@ -285,7 +251,7 @@ services:
     env_file:
       - ../.env
     environment:
-      <<: *common-env
+      <<: *env
       ENV: prod
       LLM_BASE_URL: "http://100.104.68.115:11434"
       POSTGRES_HOST: postgres
@@ -297,37 +263,38 @@ services:
       JWT_SECRET: super-dev-secret-change-me
     depends_on:
       postgres: { condition: service_healthy }
-      redis: { condition: service_healthy }
-    networks: [ backend ]
+      redis:    { condition: service_healthy }
+    networks: [backend]
     ports:
       - "8000:8000"
 
+  # ─────────────────────────────── LLM Proxy ───────────────────────────────
   llm_proxy:
     build:
       context: ../services/llm_proxy
       dockerfile: Dockerfile
     env_file: [ ../.env ]
     environment:
-      <<: *common-env
+      <<: *env
       OLLAMA_URL: "http://100.104.68.115:11434"
-    networks: [ backend ]
+    networks: [backend]
     depends_on:
-      nats: { condition: service_healthy }
-      temporal:
-        condition: service_started
+      nats:     { condition: service_healthy }
+      temporal: { condition: service_started }
     ports:
       - "8001:8000"
     restart: unless-stopped
 
+  # ─────────────────────────────── LLM Worker ───────────────────────────────
   llm_worker:
     build:
       context: ../services/llm_proxy
     command: ["python", "worker.py"]
     depends_on:
-      temporal:
-        condition: service_healthy
-    networks:
-      - backend
+      temporal: { condition: service_healthy }
+    networks: [backend]
+
+# ─────────────────────────────── Networks & Volumes ───────────────────────────────
 
 volumes:
   redis-data:
@@ -337,7 +304,8 @@ volumes:
   temporal-data:
   letsencrypt:
 
-
 networks:
   backend:
+    name: backend
     driver: bridge
+

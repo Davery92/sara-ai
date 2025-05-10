@@ -42,6 +42,7 @@ async def main():
             acts.summarise_texts,
             acts.embed_text,
             acts.upsert_summary,
+            acts.process_rooms,
         ],
     ).run()
 

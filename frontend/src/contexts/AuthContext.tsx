@@ -9,6 +9,7 @@ interface User {
 interface AuthContextType {
   user: User | null;
   isAuthenticated: boolean;
+  token: string | null;
   login: (username: string, password: string) => Promise<void>;
   signup: (username: string, password: string) => Promise<void>;
   logout: () => void;
@@ -20,6 +21,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [token, setToken] = useState<string | null>(null);
   
   // Check if user is already logged in on initial load
   useEffect(() => {
@@ -37,15 +39,16 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
   
   // Function to check token and refresh if needed
   const checkAndRefreshToken = async () => {
-    const token = localStorage.getItem('accessToken');
-    if (!token) {
+    const storedToken = localStorage.getItem('accessToken');
+    if (!storedToken) {
       setUser(null);
       setIsAuthenticated(false);
+      setToken(null);
       return;
     }
     
     try {
-      const decoded: any = jwtDecode(token);
+      const decoded: any = jwtDecode(storedToken);
       
       // Check if token is expired
       if (decoded.exp < Date.now() / 1000) {
@@ -58,6 +61,7 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
             const newDecoded: any = jwtDecode(newToken);
             setUser({ username: newDecoded.sub });
             setIsAuthenticated(true);
+            setToken(newToken);
           }
         } catch (refreshError) {
           console.error('Failed to refresh token:', refreshError);
@@ -65,17 +69,20 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
           authService.logout();
           setUser(null);
           setIsAuthenticated(false);
+          setToken(null);
         }
       } else {
         // Token is still valid
         setUser({ username: decoded.sub });
         setIsAuthenticated(true);
+        setToken(storedToken);
       }
     } catch (error) {
       console.error('Invalid token:', error);
       authService.logout();
       setUser(null);
       setIsAuthenticated(false);
+      setToken(null);
     }
   };
   
@@ -83,11 +90,12 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
   const login = async (username: string, password: string) => {
     try {
       await authService.login(username, password);
-      const token = localStorage.getItem('accessToken');
-      if (token) {
-        const decoded: any = jwtDecode(token);
+      const storedToken = localStorage.getItem('accessToken');
+      if (storedToken) {
+        const decoded: any = jwtDecode(storedToken);
         setUser({ username: decoded.sub });
         setIsAuthenticated(true);
+        setToken(storedToken);
       }
     } catch (error) {
       console.error('Login failed:', error);
@@ -99,11 +107,12 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
   const signup = async (username: string, password: string) => {
     try {
       await authService.signup(username, password);
-      const token = localStorage.getItem('accessToken');
-      if (token) {
-        const decoded: any = jwtDecode(token);
+      const storedToken = localStorage.getItem('accessToken');
+      if (storedToken) {
+        const decoded: any = jwtDecode(storedToken);
         setUser({ username: decoded.sub });
         setIsAuthenticated(true);
+        setToken(storedToken);
       }
     } catch (error) {
       console.error('Signup failed:', error);
@@ -116,10 +125,11 @@ export const AuthProvider: React.FC<{children: ReactNode}> = ({ children }) => {
     authService.logout();
     setUser(null);
     setIsAuthenticated(false);
+    setToken(null);
   };
   
   return (
-    <AuthContext.Provider value={{ user, isAuthenticated, login, signup, logout, checkAndRefreshToken }}>
+    <AuthContext.Provider value={{ user, isAuthenticated, token, login, signup, logout, checkAndRefreshToken }}>
       {children}
     </AuthContext.Provider>
   );

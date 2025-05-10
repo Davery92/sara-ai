@@ -65,14 +65,20 @@ log = logging.getLogger("dialogue_worker")
 
 
 # ── Helper: query memories from gateway ───────────────────────────────────
-async def get_memories(user_msg: str, room_id: str) -> list[str]:
+async def get_memories(user_msg: str, room_id: str, auth_token: str = None) -> list[str]:
     """Query relevant memories for the given message and room."""
     try:
+        headers = {}
+        if auth_token:
+            headers["Authorization"] = auth_token
+            log.info("🔑 Using auth token for memory retrieval")
+        
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 f"{GATEWAY_URL}/v1/memory/query",
                 json={"query": user_msg, "room_id": room_id, "top_n": MEMORY_TOP_N},
                 timeout=5.0,
+                headers=headers
             ) as resp:
                 if resp.status != 200:
                     log.warning(f"Memory API returned status {resp.status}")
@@ -89,15 +95,21 @@ async def get_memories(user_msg: str, room_id: str) -> list[str]:
 
 
 # ── Helper: fetch persona from gateway ──────────────────────────────────
-async def get_persona_config(user_id: str = None) -> str:
+async def get_persona_config(user_id: str = None, auth_token: str = None) -> str:
     """Fetch the persona configuration for the given user."""
     try:
         params = {}
+        headers = {}
+        
         if user_id:
             params["user_id"] = user_id
             log.info(f"🔍 Fetching persona for specific user: {user_id}")
         else:
             log.info("🔍 Fetching default persona (no user_id provided)")
+        
+        if auth_token:
+            headers["Authorization"] = auth_token
+            log.info("🔑 Using auth token for persona retrieval")
             
         async with aiohttp.ClientSession() as session:
             url = f"{GATEWAY_URL}/v1/persona/config"
@@ -107,6 +119,7 @@ async def get_persona_config(user_id: str = None) -> str:
                 url,
                 params=params,
                 timeout=5.0,
+                headers=headers
             ) as resp:
                 if resp.status != 200:
                     log.warning(f"❌ Persona API returned status {resp.status}")
@@ -135,7 +148,7 @@ async def get_persona_config(user_id: str = None) -> str:
 
 
 # ── Helper: build enhanced prompt with memories and persona ───────────────
-async def enhance_prompt(payload: dict) -> dict:
+async def enhance_prompt(payload: dict, auth_token: str = None) -> dict:
     """Add relevant memories and persona configuration to the prompt."""
     # Extract user message, room_id, and user_id
     user_msg = payload.get("msg", "")
@@ -145,7 +158,7 @@ async def enhance_prompt(payload: dict) -> dict:
     log.info(f"🎭 Enhancing prompt for user_id: '{user_id}', room_id: '{room_id}'")
     
     # Get persona for this user
-    persona_content = await get_persona_config(user_id)
+    persona_content = await get_persona_config(user_id, auth_token)
     
     # Log first few lines of persona content for debugging
     persona_preview = '\n'.join(persona_content.split('\n')[:3]) + '...'
@@ -155,7 +168,7 @@ async def enhance_prompt(payload: dict) -> dict:
     memories = []
     if user_msg and room_id:
         log.info(f"📚 Retrieving memories for room '{room_id}' with query: {user_msg[:50]}...")
-        memories = await get_memories(user_msg, room_id)
+        memories = await get_memories(user_msg, room_id, auth_token)
     
     # Build the enhanced system prompt
     system_prompt = persona_content
@@ -246,32 +259,62 @@ async def forward_to_llm_proxy(
                 log.info(f"📝 {role} message: {content[:100]}...")
 
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(LLM_WS_URL) as ws:
-                await ws.send_json(payload)
+        delay = 1
+        max_delay = 30
+        attempt = 1
+        while True:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    log.info(f"Attempt {attempt}: Connecting to LLM proxy at {LLM_WS_URL}")
 
-                counter = 0
-                async for msg in ws:
-                    start = time.perf_counter()
-                    await nc.publish(
-                        reply_subject,
-                        msg.data if isinstance(msg.data, bytes) else msg.data.encode(),
-                    )
-                    WS_LATENCY.observe(time.perf_counter() - start)
+                    # --- Ensure required fields for LLM proxy ---
+                    model_name = os.getenv("LLM_MODEL_NAME", "qwen3:32b")
+                    persona_content = payload.get("system_prompt") or payload.get("persona") or ""
+                    user_message = payload.get("msg") or payload.get("user_message") or ""
+                    payload["model"] = model_name
+                    payload["messages"] = [
+                        {"role": "system", "content": persona_content},
+                        {"role": "user", "content": user_message}
+                    ]
+                    if "prompt" in payload:
+                        del payload["prompt"]
+                    log.info(f"Payload to LLM proxy: {json.dumps({k: v for k, v in payload.items() if k != 'messages'}, indent=2)}\nMessages preview: {payload['messages']}")
+                    # --- End ensure required fields ---
 
-                    # Metric bump
-                    model = payload.get("model", "unknown")
-                    CHUNKS_RELAYED.labels(model=model).inc()
+                    async with session.ws_connect(LLM_WS_URL) as ws:
+                        await ws.send_json(payload)
 
-                    counter += 1
-                    if counter % ACK_EVERY == 0:
-                        await nc.publish(ack_subject, b"+ACK")
+                        counter = 0
+                        async for msg in ws:
+                            start = time.perf_counter()
+                            await nc.publish(
+                                reply_subject,
+                                msg.data if isinstance(msg.data, bytes) else msg.data.encode(),
+                            )
+                            WS_LATENCY.observe(time.perf_counter() - start)
 
-                    # ⏱️  Check for client heartbeat
-                    if time.monotonic() - last_ack > ACK_TIMEOUT:
-                        CANCELLED.inc()
-                        log.warning("no ACK for %ss – cancelling stream", ACK_TIMEOUT)
-                        break
+                            # Metric bump
+                            model = payload.get("model", "unknown")
+                            CHUNKS_RELAYED.labels(model=model).inc()
+
+                            counter += 1
+                            if counter % ACK_EVERY == 0:
+                                await nc.publish(ack_subject, b"+ACK")
+
+                            # ⏱️  Check for client heartbeat
+                            if time.monotonic() - last_ack > ACK_TIMEOUT:
+                                CANCELLED.inc()
+                                log.warning("no ACK for %ss – cancelling stream", ACK_TIMEOUT)
+                                break
+                        break  # Exit retry loop if successful
+            except (ConnectionRefusedError, OSError) as e:
+                log.warning(f"❌ LLM proxy not ready ({e}) - retrying in {delay}s (attempt {attempt})")
+            except Exception as e:
+                log.error(f"❌ Unexpected LLM proxy connection error: {str(e)} - retrying in {delay}s (attempt {attempt})")
+                log.error(f"Error type: {type(e)}")
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, max_delay)
+            attempt += 1
     finally:
         await nc.unsubscribe(ack_sid)
 
@@ -293,7 +336,7 @@ async def on_request(msg, nc):
         return
 
     # Enhance the prompt with persona and memories
-    enhanced_payload = await enhance_prompt(payload)
+    enhanced_payload = await enhance_prompt(payload, auth_token)
 
     await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
 

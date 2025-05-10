@@ -9,7 +9,11 @@ class MemoryRollupWorkflow:
             "list_rooms_with_hot_buffer",
             schedule_to_close_timeout=timedelta(seconds=30),
         )
-        await workflow.await_all([self.process_room(r) for r in rooms])
+        if rooms:
+            await workflow.execute_activity(
+                "process_rooms", rooms,
+                schedule_to_close_timeout=timedelta(minutes=5),
+            )
 
     async def process_room(self, room_id: str):
         chunks = await workflow.execute_activity(

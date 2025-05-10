@@ -31,7 +31,7 @@
 
 .message-time {
   font-size: 0.7rem;
-  color: #8e8e8e;
+  color: var(--text-color-secondary);
   margin-top: 5px;
   text-align: right;
 }
@@ -46,14 +46,14 @@
 }
 
 .user-message .message-content {
-  background-color: #0b93f6;
-  color: white;
+  background-color: var(--message-user-bg);
+  color: var(--message-user-text);
   border-bottom-right-radius: 2px;
 }
 
 .ai-message .message-content {
-  background-color: #f1f0f0;
-  color: black;
+  background-color: var(--message-ai-bg);
+  color: var(--message-ai-text);
   border-bottom-left-radius: 2px;
 }
 

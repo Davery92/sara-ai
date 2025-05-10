@@ -3,6 +3,7 @@ import json
 import logging
 import os
 import time
+import traceback
 
 import aiohttp
 from nats.aio.client import Client as NATS   # only for type-hint / publish
@@ -94,24 +95,42 @@ async def get_persona_config(user_id: str = None) -> str:
         params = {}
         if user_id:
             params["user_id"] = user_id
+            log.info(f"🔍 Fetching persona for specific user: {user_id}")
+        else:
+            log.info("🔍 Fetching default persona (no user_id provided)")
             
         async with aiohttp.ClientSession() as session:
+            url = f"{GATEWAY_URL}/v1/persona/config"
+            log.info(f"🔍 Making request to: {url} with params: {params}")
+            
             async with session.get(
-                f"{GATEWAY_URL}/v1/persona/config",
+                url,
                 params=params,
                 timeout=5.0,
             ) as resp:
                 if resp.status != 200:
-                    log.warning(f"Persona API returned status {resp.status}")
+                    log.warning(f"❌ Persona API returned status {resp.status}")
+                    response_text = await resp.text()
+                    log.warning(f"❌ Response body: {response_text[:200]}...")
                     PERSONA_FAILURE.inc()
+                    log.warning(f"⚠️ Using fallback system prompt: {SYS_CORE}")
                     return SYS_CORE
                 
                 persona_data = await resp.json()
+                persona_name = persona_data.get("name", "unknown")
+                log.info(f"✅ Successfully retrieved persona: {persona_name}")
                 PERSONA_SUCCESS.inc()
-                return persona_data.get("content", SYS_CORE)
+                
+                content = persona_data.get("content", SYS_CORE)
+                content_preview = content.split('\n')[0] if content else "Empty content"
+                log.info(f"📝 Persona content starts with: {content_preview}")
+                
+                return content
     except Exception as e:
-        log.warning(f"Failed to retrieve persona: {e}")
+        log.warning(f"❌ Failed to retrieve persona: {e}")
+        traceback.print_exc()
         PERSONA_FAILURE.inc()
+        log.warning(f"⚠️ Using fallback system prompt: {SYS_CORE}")
         return SYS_CORE
 
 
@@ -123,12 +142,19 @@ async def enhance_prompt(payload: dict) -> dict:
     room_id = payload.get("room_id", "")
     user_id = payload.get("user_id", "")
     
+    log.info(f"🎭 Enhancing prompt for user_id: '{user_id}', room_id: '{room_id}'")
+    
     # Get persona for this user
     persona_content = await get_persona_config(user_id)
+    
+    # Log first few lines of persona content for debugging
+    persona_preview = '\n'.join(persona_content.split('\n')[:3]) + '...'
+    log.info(f"🎭 Using persona for user '{user_id}': {persona_preview}")
     
     # Query relevant memories if we have a room and message
     memories = []
     if user_msg and room_id:
+        log.info(f"📚 Retrieving memories for room '{room_id}' with query: {user_msg[:50]}...")
         memories = await get_memories(user_msg, room_id)
     
     # Build the enhanced system prompt
@@ -138,6 +164,7 @@ async def enhance_prompt(payload: dict) -> dict:
     if memories:
         memory_text = "\n\n".join([f"- {memory}" for memory in memories])
         system_prompt = f"{system_prompt}\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+        log.info(f"📚 Added {len(memories)} memories to prompt")
     
     # Add prompt version metadata
     prompt_version = {
@@ -149,28 +176,41 @@ async def enhance_prompt(payload: dict) -> dict:
     # Check if there's a messages or system_prompt field to enhance
     if "messages" in payload:
         # Find the system message if it exists
+        system_msg_idx = None
         for i, msg in enumerate(payload["messages"]):
             if msg.get("role") == "system":
-                # Replace with our enhanced system prompt
-                payload["messages"][i]["content"] = system_prompt
+                system_msg_idx = i
                 break
+                
+        if system_msg_idx is not None:
+            # Replace with our enhanced system prompt
+            log.info(f"🎭 Replacing existing system message with enhanced prompt at index {system_msg_idx}")
+            payload["messages"][system_msg_idx]["content"] = system_prompt
         else:
             # No system message found, prepend one
+            log.info(f"🎭 No system message found, adding new system message with persona")
             payload["messages"].insert(0, {
                 "role": "system", 
                 "content": system_prompt
             })
         
+        # Log the first few messages for debugging
+        for i, msg in enumerate(payload["messages"][:3]):
+            role = msg.get("role", "unknown")
+            content_preview = msg.get("content", "")[:50] + "..."
+            log.info(f"📝 Message {i}: role={role}, content={content_preview}")
+        
         # Add metadata to the payload
         payload["prompt_metadata"] = prompt_version
     else:
         # Default behavior - add system prompt
+        log.info("🎭 Using default behavior - setting system_prompt directly")
         payload["system_prompt"] = system_prompt
         payload["prompt_metadata"] = prompt_version
     
-    log.info(f"Enhanced prompt with persona for user {user_id or 'default'}")
+    log.info(f"✅ Enhanced prompt with persona for user {user_id or 'default'}")
     if memories:
-        log.info(f"Enhanced prompt with {len(memories)} memories for room {room_id}")
+        log.info(f"✅ Enhanced prompt with {len(memories)} memories for room {room_id}")
     
     return payload
 
@@ -191,6 +231,19 @@ async def forward_to_llm_proxy(
 
     # Subscribe to the ACK subject before we start sending
     ack_sid = await nc.subscribe(ack_subject, cb=_ack_listener)
+
+    # Log the full payload for debugging
+    log.info("🔄 Final transformed payload being sent to LLM:")
+    if "messages" in payload:
+        for i, msg in enumerate(payload["messages"]):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if role == "system":
+                log.info(f"📝 System message: {content}")
+            elif role == "user":
+                log.info(f"📝 User message: {content[:100]}...")
+            else:
+                log.info(f"📝 {role} message: {content[:100]}...")
 
     try:
         async with aiohttp.ClientSession() as session:

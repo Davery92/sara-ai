@@ -151,21 +151,137 @@ export const chatService = {
   },
 
   // Send chat completion
-  sendChatCompletion: async (messages: any[]) => {
+  sendChatCompletion: async (messages: any[], onStream?: (chunk: any) => void) => {
     // Use the full URL path with domain to bypass proxy issues
     // Explicitly include the authorization header for absolute URLs
     const token = localStorage.getItem('accessToken');
     
+    // Extract user ID from JWT token
+    let userId = null;
+    if (token) {
+      try {
+        // Simple JWT extraction (not full validation)
+        const base64Url = token.split('.')[1];
+        const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+        const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
+          return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
+        }).join(''));
+        
+        const payload = JSON.parse(jsonPayload);
+        userId = payload.sub; // JWT subject field contains username/user_id
+        console.log('Extracted user ID from token:', userId);
+      } catch (e) {
+        console.error('Failed to extract user ID from token:', e);
+      }
+    }
+    
     console.log("📤 Sending chat completion request:", { messages });
     
+    // If there's a streaming callback, use streaming mode
+    const streamMode = !!onStream;
+    
     try {
-      const response = await axios.post('http://localhost:8000/v1/chat/completions', 
-        {
-          model: 'qwen3:32b',  // Use the qwen3:32b model
-          messages,
-          stream: false,
-          max_tokens: 2000,           // Set a reasonable limit
-        },
+      if (streamMode) {
+        console.log("Using streaming mode");
+        
+        // Simple, direct approach for handling Server-Sent Events
+        const response = await fetch('http://localhost:8000/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': token ? `Bearer ${token}` : '',
+          },
+          body: JSON.stringify({
+            model: 'qwen3:32b',
+            messages,
+            stream: true,
+            max_tokens: 2000,
+            // Include user_id but only for backend logging/routing
+            room_id: 'default-room',
+          }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('ReadableStream not supported');
+        }
+        
+        const decoder = new TextDecoder();
+        let partialLine = '';
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          // Decode the value to a string
+          const text = decoder.decode(value, { stream: true });
+          
+          // Process each chunk to handle SSE format - lines that start with "data: "
+          const lines = (partialLine + text).split('\n');
+          partialLine = lines.pop() || ''; // Save any partial line for next time
+          
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            
+            // Skip empty lines or DONE messages
+            if (trimmedLine === '' || trimmedLine === 'data: [DONE]') {
+              continue;
+            }
+            
+            // Extract the JSON data
+            if (trimmedLine.startsWith('data: ')) {
+              try {
+                const jsonStr = trimmedLine.slice(6); // Remove "data: " prefix
+                const jsonData = JSON.parse(jsonStr);
+                onStream(jsonData);
+              } catch (e) {
+                console.warn('Failed to parse JSON from SSE:', trimmedLine, e);
+              }
+            }
+          }
+        }
+        
+        return { data: { status: 'complete' } };
+      } else {
+        // Use non-streaming mode
+        const response = await axios.post('http://localhost:8000/v1/chat/completions', 
+          {
+            model: 'qwen3:32b',
+            messages,
+            stream: false,
+            max_tokens: 2000,
+            // Include user_id for persona selection on backend
+            user_id: userId,
+            room_id: 'default-room', // Use a default room ID for memory context
+          },
+          {
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': token ? `Bearer ${token}` : '',
+            }
+          }
+        );
+        
+        console.log("📥 Received chat completion response:", response.data);
+        return response;
+      }
+    } catch (error) {
+      console.error("❌ Chat completion error:", error);
+      throw error;
+    }
+  },
+  
+  // Set user persona preference
+  setPersona: async (personaName: string) => {
+    const token = localStorage.getItem('accessToken');
+    
+    try {
+      const response = await axios.patch('http://localhost:8000/v1/persona', 
+        { persona: personaName },
         {
           headers: {
             'Content-Type': 'application/json',
@@ -174,13 +290,33 @@ export const chatService = {
         }
       );
       
-      console.log("📥 Received chat completion response:", response.data);
-      return response;
+      console.log("Set persona response:", response.data);
+      return response.data;
     } catch (error) {
-      console.error("❌ Chat completion error:", error);
+      console.error("Error setting persona:", error);
       throw error;
     }
   },
+  
+  // Get available personas
+  getPersonas: async () => {
+    const token = localStorage.getItem('accessToken');
+    
+    try {
+      const response = await axios.get('http://localhost:8000/v1/persona/list',
+        {
+          headers: {
+            'Authorization': token ? `Bearer ${token}` : '',
+          }
+        }
+      );
+      
+      return response.data;
+    } catch (error) {
+      console.error("Error getting personas:", error);
+      throw error;
+    }
+  }
 };
 
 export default api; 

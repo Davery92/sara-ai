@@ -1,0 +1,6 @@
+fastapi==0.111.*
+uvicorn[standard]==0.29.*
+httpx==0.27.*
+httpx[websockets]==0.27.*
+temporalio>=1.0
+aiohttp>=3.8.0

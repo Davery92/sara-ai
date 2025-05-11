@@ -3,8 +3,8 @@ from typing import Tuple
 import nats
 
 # Use localhost when running locally, container hostname when in container
-NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222" if os.getenv("ENV") != "prod" else "nats://nats:4222")
-
+#NATS_URL = os.getenv("NATS_URL", "nats://localhost:4222" if os.getenv("ENV") != "prod" else "nats://nats:4222")
+NATS_URL = os.getenv("NATS_URL", "nats://nats:4222")
 def session_subjects() -> Tuple[str, str, str]:
     session_id = uuid.uuid4().hex
     req  = f"chat.request.{session_id}"

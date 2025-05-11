@@ -13,17 +13,22 @@ log = logging.getLogger("ws")
 async def stream_endpoint(ws: WebSocket):
     await ws.accept()
 
-    # 1) New session → two subjects
+    # 1) New session → two subjects for request & response
     session_id, req_subj, resp_subj = session_subjects()
+    # 1b) And one subject for heartbeats (ACKs)
+    ack_subj = f"ack.{session_id}"
+    log.info(f"Using NATS Ack subject: {ack_subj}")
 
-    # 2) NATS connect
+    # 2) Connect to NATS
     nc = await nats_connect()
 
-    # 3) Subscribe for replies and forward them to the client
+    # 3) Subscribe for replies and forward them (plus send back +ACK)
     async def on_reply(msg):
         try:
-            # msg.data is bytes of a JSON text chunk
-            await ws.send_text(msg.data.decode())
+            chunk = msg.data.decode()
+            await ws.send_text(chunk)
+            # Heartbeat back to the worker so it stays alive
+            await nc.publish(ack_subj, b"+ACK")
         except Exception:
             log.exception("failed to send chunk to WS")
 
@@ -35,35 +40,39 @@ async def stream_endpoint(ws: WebSocket):
             if not text.strip():
                 continue
 
+            # Parse the incoming JSON
             try:
                 payload = json.loads(text)
             except json.JSONDecodeError:
                 await ws.send_json({"error": "invalid JSON"})
                 continue
 
-            # 4) Publish the client's chat request
+            # 4) Extract JWT and build headers (Auth + Ack)
             jwt_raw = ws.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-            hdrs = {"Auth": jwt_raw.encode()} if jwt_raw else {}
-            
-            # Extract user_id from JWT if available
+            headers: dict[str, bytes] = {}
+            if jwt_raw:
+                headers["Auth"] = jwt_raw.encode()
+            headers["Ack"] = ack_subj.encode()
+
+            # Optionally extract user_id from your JWT
             user_id = ""
             if jwt_raw:
                 try:
-                    jwt_payload = jwt.decode(jwt_raw, _SECRET, algorithms=[_ALG])
-                    user_id = jwt_payload.get("sub", "")
+                    data = jwt.decode(jwt_raw, _SECRET, algorithms=[_ALG])
+                    user_id = data.get("sub", "")
                 except Exception as e:
-                    log.warning(f"Failed to decode JWT: {str(e)}")
-            
-            # Add user_id to payload
+                    log.warning(f"Failed to decode JWT: {e}")
+
+            # Attach it for persona/memory lookup
             payload["user_id"] = user_id
-            
+
+            # Publish the request with both reply & ack subjects
             await nc.publish(
                 req_subj,
                 json.dumps(payload).encode(),
                 reply=resp_subj,
-                headers=hdrs
-             )
-
+                headers=headers
+            )
 
     except WebSocketDisconnect:
         log.info("WebSocket disconnected by client")

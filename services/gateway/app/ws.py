@@ -1,8 +1,10 @@
 # services/gateway/app/ws.py
 
 import json, logging
+import jwt
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from services.common.nats_helpers import nats_connect, session_subjects
+from .auth import _SECRET, _ALG
 
 router = APIRouter()
 log = logging.getLogger("ws")
@@ -39,15 +41,27 @@ async def stream_endpoint(ws: WebSocket):
                 await ws.send_json({"error": "invalid JSON"})
                 continue
 
-            # 4) Publish the client’s chat request
+            # 4) Publish the client's chat request
             jwt_raw = ws.headers.get("Authorization", "").removeprefix("Bearer ").strip()
             hdrs = {"Auth": jwt_raw.encode()} if jwt_raw else {}
+            
+            # Extract user_id from JWT if available
+            user_id = ""
+            if jwt_raw:
+                try:
+                    jwt_payload = jwt.decode(jwt_raw, _SECRET, algorithms=[_ALG])
+                    user_id = jwt_payload.get("sub", "")
+                except Exception as e:
+                    log.warning(f"Failed to decode JWT: {str(e)}")
+            
+            # Add user_id to payload
+            payload["user_id"] = user_id
             
             await nc.publish(
                 req_subj,
                 json.dumps(payload).encode(),
-                reply=resp_subj
-                , headers=hdrs
+                reply=resp_subj,
+                headers=hdrs
              )
 
 

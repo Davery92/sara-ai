@@ -24,7 +24,7 @@ DEFAULT_PERSONA = os.getenv("DEFAULT_PERSONA", "sara_default")
 SYS_CORE = os.getenv("SYSTEM_PROMPT", "You are a helpful AI assistant.")
 MEMORY_TEMPLATE = os.getenv("MEMORY_TEMPLATE", "Previous conversation summaries:\n{memories}")
 
-ACK_TIMEOUT  = 3           # seconds without +ACK before cancelling the stream
+ACK_TIMEOUT  = 15          # seconds without +ACK before cancelling the stream (increased from 3)
 ACK_EVERY    = 10          # send an ACK to the client after this many chunks
 
 
@@ -70,26 +70,38 @@ async def get_memories(user_msg: str, room_id: str, auth_token: str = None) -> l
     try:
         headers = {}
         if auth_token:
-            headers["Authorization"] = auth_token
+            headers["Authorization"] = f"Bearer {auth_token}"
             log.info("🔑 Using auth token for memory retrieval")
         
         async with aiohttp.ClientSession() as session:
-            async with session.post(
-                f"{GATEWAY_URL}/v1/memory/query",
-                json={"query": user_msg, "room_id": room_id, "top_n": MEMORY_TOP_N},
-                timeout=5.0,
-                headers=headers
-            ) as resp:
-                if resp.status != 200:
-                    log.warning(f"Memory API returned status {resp.status}")
-                    MEMORY_FAILURE.inc()
-                    return []
-                
-                memories = await resp.json()
-                MEMORY_SUCCESS.inc()
-                return [memory["text"] for memory in memories]
+            try:
+                async with session.post(
+                    f"{GATEWAY_URL}/v1/memory/query",
+                    json={"query": user_msg, "room_id": room_id, "top_n": MEMORY_TOP_N},
+                    timeout=5.0,
+                    headers=headers
+                ) as resp:
+                    if resp.status != 200:
+                        log.warning(f"Memory API returned status {resp.status}")
+                        # Try to get response body for better debugging
+                        try:
+                            error_body = await resp.text()
+                            log.warning(f"Memory API error response: {error_body[:200]}...")
+                        except Exception:
+                            log.warning("Could not read error response body")
+                        MEMORY_FAILURE.inc()
+                        return []
+                    
+                    memories = await resp.json()
+                    MEMORY_SUCCESS.inc()
+                    return [memory["text"] for memory in memories]
+            except aiohttp.ClientError as e:
+                log.warning(f"Network error during memory retrieval: {e}")
+                MEMORY_FAILURE.inc()
+                return []
     except Exception as e:
         log.warning(f"Failed to retrieve memories: {e}")
+        traceback.print_exc()
         MEMORY_FAILURE.inc()
         return []
 
@@ -108,7 +120,7 @@ async def get_persona_config(user_id: str = None, auth_token: str = None) -> str
             log.info("🔍 Fetching default persona (no user_id provided)")
         
         if auth_token:
-            headers["Authorization"] = auth_token
+            headers["Authorization"] = f"Bearer {auth_token}"
             log.info("🔑 Using auth token for persona retrieval")
             
         async with aiohttp.ClientSession() as session:
@@ -236,7 +248,9 @@ async def forward_to_llm_proxy(
     nc: NATS,
 ):
     """Stream LLM output to NATS; cancel if ACKs stop."""
-    last_ack = time.monotonic()
+    last_ack = time.monotonic()  # Initialize with current time
+    ack_sid = None
+    max_attempts = 3  # Maximum number of connection attempts
 
     async def _ack_listener(msg):
         nonlocal last_ack
@@ -262,7 +276,7 @@ async def forward_to_llm_proxy(
         delay = 1
         max_delay = 30
         attempt = 1
-        while True:
+        while attempt <= max_attempts:  # Limit the number of attempts
             try:
                 async with aiohttp.ClientSession() as session:
                     log.info(f"Attempt {attempt}: Connecting to LLM proxy at {LLM_WS_URL}")
@@ -281,65 +295,196 @@ async def forward_to_llm_proxy(
                     log.info(f"Payload to LLM proxy: {json.dumps({k: v for k, v in payload.items() if k != 'messages'}, indent=2)}\nMessages preview: {payload['messages']}")
                     # --- End ensure required fields ---
 
-                    async with session.ws_connect(LLM_WS_URL) as ws:
-                        await ws.send_json(payload)
+                    try:
+                        # Set larger timeout for initial connection
+                        async with session.ws_connect(LLM_WS_URL, timeout=20) as ws:
+                            log.info("✅ Successfully connected to LLM proxy websocket")
+                            
+                            # Send initial payload (this might take time for the LLM to process)
+                            log.info("📤 Sending payload to LLM proxy")
+                            # Reset the last_ack time right before sending payload
+                            last_ack = time.monotonic()  # Reset timer before potentially long operation
+                            await ws.send_json(payload)
+                            log.info("📤 Payload sent, waiting for responses...")
+                            
+                            # Send an initial ACK to indicate we're still alive
+                            await nc.publish(ack_subject, b"+INIT_ACK")
+                            
+                            # Get the first message with a timeout
+                            try:
+                                # Confirm LLM has started processing
+                                first_msg = await asyncio.wait_for(ws.receive(), timeout=10.0)
+                                log.info("📨 Received first message from LLM proxy")
+                                
+                                # Process the first message
+                                if first_msg.type == aiohttp.WSMsgType.BINARY or first_msg.type == aiohttp.WSMsgType.TEXT:
+                                    start = time.perf_counter()
+                                    await nc.publish(
+                                        reply_subject,
+                                        first_msg.data if isinstance(first_msg.data, bytes) else first_msg.data.encode(),
+                                    )
+                                    WS_LATENCY.observe(time.perf_counter() - start)
+                                    
+                                    # Send first ACK to reset the timer
+                                    await nc.publish(ack_subject, b"+ACK")
+                                    counter = 1
+                                else:
+                                    log.warning(f"Unexpected first message type: {first_msg.type}")
+                                    raise ValueError(f"Unexpected message type: {first_msg.type}")
+                                
+                            except asyncio.TimeoutError:
+                                log.warning("⏰ Timed out waiting for first message from LLM proxy")
+                                raise
 
-                        counter = 0
-                        async for msg in ws:
-                            start = time.perf_counter()
-                            await nc.publish(
-                                reply_subject,
-                                msg.data if isinstance(msg.data, bytes) else msg.data.encode(),
-                            )
-                            WS_LATENCY.observe(time.perf_counter() - start)
+                            # Continue with the rest of the stream
+                            async for msg in ws:
+                                start = time.perf_counter()
+                                await nc.publish(
+                                    reply_subject,
+                                    msg.data if isinstance(msg.data, bytes) else msg.data.encode(),
+                                )
+                                WS_LATENCY.observe(time.perf_counter() - start)
 
-                            # Metric bump
-                            model = payload.get("model", "unknown")
-                            CHUNKS_RELAYED.labels(model=model).inc()
+                                # Metric bump
+                                model = payload.get("model", "unknown")
+                                CHUNKS_RELAYED.labels(model=model).inc()
 
-                            counter += 1
-                            if counter % ACK_EVERY == 0:
-                                await nc.publish(ack_subject, b"+ACK")
+                                counter += 1
+                                if counter % ACK_EVERY == 0:
+                                    await nc.publish(ack_subject, b"+ACK")
+                                    log.info(f"📤 Sent ACK after {counter} chunks")
 
-                            # ⏱️  Check for client heartbeat
-                            if time.monotonic() - last_ack > ACK_TIMEOUT:
-                                CANCELLED.inc()
-                                log.warning("no ACK for %ss – cancelling stream", ACK_TIMEOUT)
-                                break
-                        break  # Exit retry loop if successful
+                                # ⏱️  Check for client heartbeat
+                                time_since_last_ack = time.monotonic() - last_ack
+                                if time_since_last_ack > ACK_TIMEOUT:
+                                    # Only warn on first detection
+                                    if time_since_last_ack < ACK_TIMEOUT + 2:  # Only log once
+                                        log.warning(f"⚠️ No ACK for {time_since_last_ack:.1f}s – will cancel if no ACK in 5s")
+                                        # Send an additional ACK to try to recover
+                                        await nc.publish(ack_subject, b"+RECOVERY_ACK")
+                                        
+                                    # Only cancel after timeout + 5 seconds grace period
+                                    if time_since_last_ack > ACK_TIMEOUT + 5:
+                                        CANCELLED.inc()
+                                        log.warning(f"❌ No ACK for {time_since_last_ack:.1f}s – cancelling stream")
+                                        break
+                            break  # Exit retry loop if successful
+                    except aiohttp.ClientError as e:
+                        log.warning(f"❌ WebSocket connection error: {str(e)}")
+                        raise
+                    except asyncio.TimeoutError:
+                        log.warning("⏰ Timeout while communicating with LLM proxy")
+                        raise
             except (ConnectionRefusedError, OSError) as e:
-                log.warning(f"❌ LLM proxy not ready ({e}) - retrying in {delay}s (attempt {attempt})")
+                log.warning(f"❌ LLM proxy not ready ({e}) - retrying in {delay}s (attempt {attempt}/{max_attempts})")
             except Exception as e:
-                log.error(f"❌ Unexpected LLM proxy connection error: {str(e)} - retrying in {delay}s (attempt {attempt})")
+                log.error(f"❌ Unexpected LLM proxy connection error: {str(e)} - retrying in {delay}s (attempt {attempt}/{max_attempts})")
                 log.error(f"Error type: {type(e)}")
             await asyncio.sleep(delay)
             delay = min(delay * 2, max_delay)
             attempt += 1
+            
+        # If we've exhausted all attempts, send a fallback response
+        if attempt > max_attempts:
+            log.warning(f"⚠️ Exhausted {max_attempts} attempts to connect to LLM proxy - sending fallback response")
+            fallback_message = {
+                "role": "assistant",
+                "content": "I'm sorry, but I'm having trouble connecting to my language model backend at the moment. Please try again in a few moments."
+            }
+            await nc.publish(reply_subject, json.dumps(fallback_message).encode())
+            # Send an ACK to avoid client timeout
+            await nc.publish(ack_subject, b"+ACK")
     finally:
-        await nc.unsubscribe(ack_sid)
+        try:
+            if ack_sid and nc and hasattr(nc, "unsubscribe"):
+                await nc.unsubscribe(ack_sid)
+        except Exception as e:
+            log.warning(f"Error during unsubscribe: {str(e)}")
 
 
 # ── NATS subscription callback ────────────────────────────────────────────
 async def on_request(msg, nc):
-    payload       = json.loads(msg.data)
-    reply_subject = msg.reply
-    ack_subject   = msg.headers.get("Ack", "")
+    try:
+        if not msg or not hasattr(msg, 'data'):
+            log.error("Invalid message received: message object is None or missing data")
+            return
+            
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as e:
+            log.error(f"Failed to decode message data as JSON: {e}")
+            return
+            
+        if not hasattr(msg, 'reply') or not msg.reply:
+            log.error("Message missing reply subject")
+            return
+        
+        reply_subject = msg.reply
+        
+        # Safe header access with default empty dict
+        headers = getattr(msg, 'headers', {}) or {}
+        ack_subject = headers.get("Ack", "")
+        
+        if not ack_subject:
+            log.error("Missing Ack header – refusing request")
+            return
 
-    if not ack_subject:
-        log.error("missing Ack header – refusing request")
-        return
+        # Extract auth token
+        auth_token = headers.get("Auth", "")
+        if not auth_token:
+            log.warning("Rejecting msg: missing Auth header")
+            return
 
-    # NEW: guard against missing Auth
-    auth_token = (msg.headers or {}).get("Auth", "")
-    if not auth_token:
-        log.warning("rejecting msg: missing Auth header")
-        return
+        # Enhance the prompt with persona and memories
+        try:
+            enhanced_payload = await enhance_prompt(payload, auth_token)
+            await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
+        except Exception as e:
+            log.error(f"Error in processing or forwarding: {str(e)}")
+            traceback.print_exc()
+            
+            # Try to send a fallback error message to the client
+            try:
+                error_msg = {
+                    "role": "assistant",
+                    "content": "I apologize, but I encountered an error while processing your request."
+                }
+                if reply_subject:
+                    await nc.publish(reply_subject, json.dumps(error_msg).encode())
+            except Exception as nested_error:
+                log.error(f"Failed to send error response: {str(nested_error)}")
+    except Exception as e:
+        log.error(f"Error processing message: {str(e)}")
+        traceback.print_exc()
 
-    # Enhance the prompt with persona and memories
-    enhanced_payload = await enhance_prompt(payload, auth_token)
 
-    await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
-
+# ── Helper: check LLM proxy status ─────────────────────────────────────────
+async def check_llm_proxy_health():
+    """Check if the LLM proxy is responsive."""
+    http_url = LLM_WS_URL.replace('ws://', 'http://').replace('wss://', 'https://')
+    base_url = http_url.split('/v1/')[0]
+    
+    # Try multiple possible health check endpoints
+    health_endpoints = ['/healthz', '/health', '/ping', '/']
+    
+    for endpoint in health_endpoints:
+        health_url = f"{base_url}{endpoint}"
+        log.info(f"🏥 Checking LLM proxy health at {health_url}")
+        
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(health_url, timeout=5.0) as resp:
+                    if resp.status < 400:  # Any 2xx or 3xx response
+                        log.info(f"✅ LLM proxy is healthy - responded to {health_url}")
+                        return True
+                    else:
+                        log.warning(f"❌ LLM proxy endpoint {health_url} returned status {resp.status}")
+        except Exception as e:
+            log.warning(f"❌ Failed to connect to LLM proxy health endpoint {health_url}: {e}")
+    
+    # If we reach this point, all health check attempts have failed
+    log.error("❌ All LLM proxy health checks failed")
+    return False
 
 
 # ── Main event-loop ───────────────────────────────────────────────────────
@@ -347,6 +492,11 @@ async def main():
     # Expose /metrics before connecting so Prom doesn't scrape an empty target
     start_http_server(METRICS_PORT)
     log.info("Prometheus metrics on :%s/metrics", METRICS_PORT)
+    
+    # Check LLM proxy health
+    llm_proxy_healthy = await check_llm_proxy_health()
+    if not llm_proxy_healthy:
+        log.warning("⚠️ LLM proxy not responding - proceeding anyway, but expect delays or errors")
 
     # JetStream pull-loop → on_request (runs forever)
     await consume(on_request)

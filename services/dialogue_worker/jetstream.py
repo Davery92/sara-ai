@@ -95,28 +95,37 @@ async def consume(loop_cb):
         logger.info("Starting main message processing loop")
         while True:
             try:
-                logger.debug("Fetching messages")
                 msgs = await sub.fetch(10, timeout=1)
-                logger.debug(f"Fetched {len(msgs)} messages")
             except TimeoutError:
-                # no messages arrived in this interval → just loop again
                 await asyncio.sleep(0.1)
                 continue
             except Exception as e:
-                logger.error(f"Unexpected error fetching messages: {e}")
+                logger.error("Unexpected fetch error: %s", e)
                 await asyncio.sleep(1)
                 continue
 
             for m in msgs:
                 try:
-                    logger.debug(f"Processing message: {m.subject}")
-                    verify(m.header.get("Auth", ""))
+                    logger.debug("Processing message: %s", m.subject)
+
+                    # ── Auth header → verify JWT ──────────────────────────
+                    tok = (m.headers or {}).get("Auth")
+                    if tok is None:
+                        raise ValueError("Missing Auth header")
+
+                    if isinstance(tok, bytes):
+                        tok = tok.decode()
+
+                    verify(tok)                   # raises on bad token
+
+                    # hand off to on_request(); it will ack/term
                     await loop_cb(m, nc)
-                    await m.ack()
-                    logger.debug(f"Successfully processed message: {m.subject}")
+
                 except Exception as e:
-                    logger.warning(f"Rejecting message: {e}")
+                    logger.warning("Rejecting message: %s", e)
                     await m.term()
+
+            await asyncio.sleep(0.1)              # light back-off
 
             # slight backoff to avoid a tight spin
             await asyncio.sleep(0.1)

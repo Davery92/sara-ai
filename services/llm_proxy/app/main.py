@@ -8,6 +8,11 @@ from .workflows import ChatWorkflow
 app = FastAPI(title="LLM Streaming Proxy")
 log = logging.getLogger("llm_proxy")
 
+@app.get("/healthz")
+async def healthz():
+    return {"ok": True}
+
+
 @app.websocket("/v1/stream")
 async def stream_ws(ws: WebSocket):
     await ws.accept()

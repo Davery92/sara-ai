@@ -39,9 +39,16 @@ async def enqueue_chat(req: ChatRequest,
     # Publish it to NATS for processing
     subj = f"chat.request.{req.room_id}"
     ack_subj = f"ack.{uuid4()}"
+    reply_subj = f"resp.{uuid4()}"  
+
     headers = {
-        "Auth": jwt_token,
-        "Ack":  ack_subj,
+        "Auth":  jwt_token,
+        "Ack":   ack_subj,
+        "Reply": reply_subj,              # 🆕
     }
     await js.publish(subj, json.dumps(payload).encode(), headers=headers)
-    return {"queued": True, "ack_subject": ack_subj}
+    return {
+        "queued": True,
+        "ack_subject":   ack_subj,
+        "reply_subject": reply_subj       # let the caller know where to listen
+    }

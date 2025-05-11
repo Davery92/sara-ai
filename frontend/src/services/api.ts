@@ -1,302 +1,140 @@
+/**
+ * src/api.ts  – unified helper layer
+ *
+ *  authService
+ *    • signup / login / refresh / logout / getMe
+ *
+ *  chatService
+ *    • send            – primary streaming call
+ *    • sendMessage     – legacy wrapper → send()
+ *    • getPersonas     – GET  /v1/persona/list
+ *    • setPersona      – PATCH /v1/persona
+ */
+
 import axios from 'axios';
 
-// Create an axios instance with base URL
-// No need for base URL since we're using the proxy
+/* ───────────────────────────
+   Axios instance w/ auth token
+   ─────────────────────────── */
 const api = axios.create({
-  headers: {
-    'Content-Type': 'application/json',
-  },
+  baseURL: 'http://localhost:8000',
+  headers: { 'Content-Type': 'application/json' },
 });
 
-// Add a request interceptor to include auth token
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('accessToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
-  }
-);
+api.interceptors.request.use((config) => {
+  const t = localStorage.getItem('accessToken');
+  if (t) config.headers.Authorization = `Bearer ${t}`;
+  return config;
+});
 
-// Add a response interceptor to handle token refresh
-api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
-  async (error) => {
-    const originalRequest = error.config;
-    
-    // If the error is 401 (Unauthorized) and we haven't already tried to refresh
-    if (error.response?.status === 401 && !originalRequest._retry) {
-      originalRequest._retry = true; // Mark that we're trying to refresh
-      
-      try {
-        // Try to refresh the token
-        const refreshToken = localStorage.getItem('refreshToken');
-        if (!refreshToken) {
-          throw new Error('No refresh token available');
-        }
-        
-        const response = await axios.post('http://localhost:8000/auth/refresh', { 
-          refresh_token: refreshToken 
-        });
-        
-        // Store the new tokens
-        const { access_token, refresh_token } = response.data;
-        localStorage.setItem('accessToken', access_token);
-        localStorage.setItem('refreshToken', refresh_token);
-        
-        // Retry the original request with the new token
-        originalRequest.headers.Authorization = `Bearer ${access_token}`;
-        return axios(originalRequest);
-      } catch (refreshError) {
-        console.error('Token refresh failed:', refreshError);
-        localStorage.removeItem('accessToken');
-        localStorage.removeItem('refreshToken');
-        // Redirect to login page or handle auth failure
-        return Promise.reject(refreshError);
-      }
-    }
-    
-    return Promise.reject(error);
-  }
-);
-
-// Authentication service
+/* ──────────  Auth  ───────── */
 export const authService = {
-  // Register a new user
   signup: async (username: string, password: string) => {
-    // Use the full URL path with domain to bypass proxy issues
-    const response = await api.post('http://localhost:8000/auth/signup', { username, password });
-    if (response.data.access_token) {
-      localStorage.setItem('accessToken', response.data.access_token);
-      localStorage.setItem('refreshToken', response.data.refresh_token);
-    }
-    return response.data;
+    const { data } = await api.post('/auth/signup', { username, password });
+    storeTokens(data);
+    return data;
   },
 
-  // Login
   login: async (username: string, password: string) => {
-    // Use the full URL path with domain to bypass proxy issues
-    const response = await api.post('http://localhost:8000/auth/login', { username, password });
-    if (response.data.access_token) {
-      localStorage.setItem('accessToken', response.data.access_token);
-      localStorage.setItem('refreshToken', response.data.refresh_token);
-    }
-    return response.data;
+    const { data } = await api.post('/auth/login', { username, password });
+    storeTokens(data);
+    return data;
   },
 
-  // Logout
+  refreshToken: async () => {
+    const refresh = localStorage.getItem('refreshToken');
+    const { data } = await api.post('/auth/refresh', { refresh_token: refresh });
+    storeTokens(data);
+    return data;
+  },
+
   logout: () => {
     localStorage.removeItem('accessToken');
     localStorage.removeItem('refreshToken');
   },
 
-  // Get current user
-  getMe: async () => {
-    return await api.get('/auth/me');
-  },
-  
-  // Refresh token
-  refreshToken: async () => {
-    const refreshToken = localStorage.getItem('refreshToken');
-    if (!refreshToken) {
-      throw new Error('No refresh token available');
-    }
-    
-    const response = await api.post('http://localhost:8000/auth/refresh', { 
-      refresh_token: refreshToken 
-    });
-    
-    if (response.data.access_token) {
-      localStorage.setItem('accessToken', response.data.access_token);
-      localStorage.setItem('refreshToken', response.data.refresh_token);
-    }
-    
-    return response.data;
-  },
-  
-  // Force login with existing credentials
-  forceRefresh: async () => {
-    try {
-      // Try login with David account (for development purposes only)
-      const response = await axios.post('http://localhost:8000/auth/login', { 
-        username: 'David', 
-        password: 'password' 
-      });
-      
-      if (response.data.access_token) {
-        localStorage.setItem('accessToken', response.data.access_token);
-        localStorage.setItem('refreshToken', response.data.refresh_token);
-        console.log('Successfully refreshed auth tokens');
-        return true;
-      }
-      return false;
-    } catch (error) {
-      console.error('Failed to force refresh tokens:', error);
-      return false;
-    }
+  getMe: () => api.get('/auth/me'),
+};
+
+const storeTokens = (d: any) => {
+  if (d?.access_token) {
+    localStorage.setItem('accessToken',  d.access_token);
+    localStorage.setItem('refreshToken', d.refresh_token);
   }
 };
 
-// Chat service
+/* ──────────  Chat  ───────── */
 export const chatService = {
-  // Send a message to the queue endpoint
-  sendMessage: async (text: string, roomId: string = 'default-room') => {
+  /**
+   * Primary helper: open /v1/stream WebSocket.
+   * Resolves with the full assistant text; onChunk gives streaming updates.
+   */
+  send: (
+    messages: any[],
+    onChunk?: (chunk: string) => void,
+    roomId = 'default-room'
+  ) => new Promise<{ text: string }>((resolve, reject) => {
     const token = localStorage.getItem('accessToken');
-    return await api.post('/v1/chat/queue', { 
-      room_id: roomId,
-      msg: text 
-    }, {
-      headers: {
-        'Authorization': token ? `Bearer ${token}` : '',
-      }
-    });
-  },
+    if (!token) return reject(new Error('No auth token'));
 
-  // Send chat completion via WebSocket
-  sendChatCompletion: async (messages: any[], onStream?: (chunk: any) => void) => {
-    const token = localStorage.getItem('accessToken');
-    if (!token) {
-      throw new Error('No authentication token available');
-    }
+    const ws = new WebSocket(
+      `ws://localhost:8000/v1/stream?token=${token}`
+    );
 
-    // Extract user ID from JWT token
-    let userId = null;
-    try {
-      const base64Url = token.split('.')[1];
-      const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-      const jsonPayload = decodeURIComponent(atob(base64).split('').map(c => {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-      }).join(''));
-      
-      const payload = JSON.parse(jsonPayload);
-      userId = payload.sub;
-      console.log('Extracted user ID from token:', userId);
-    } catch (e) {
-      console.error('Failed to extract user ID from token:', e);
-    }
+    let full = '';
 
-    console.log("📤 Sending chat completion request:", { messages });
-    
-    // If there's a streaming callback, use streaming mode
-    const streamMode = !!onStream;
-    
-    try {
-      if (streamMode) {
-        console.log("Using streaming mode");
-        
-        // Create WebSocket connection
-        const ws = new WebSocket(`ws://localhost:8000/v1/stream?token=${token}`);
-        
-        return new Promise((resolve, reject) => {
-          ws.onopen = () => {
-            console.log('WebSocket connected');
-            // Send the chat request
-            ws.send(JSON.stringify({
-              model: 'qwen3:32b',
-              messages,
-              stream: true,
-              max_tokens: 2000,
-              room_id: 'default-room',
-            }));
-          };
-
-          ws.onmessage = (event) => {
-            try {
-              const data = JSON.parse(event.data);
-              if (data.choices && data.choices[0]) {
-                onStream?.(data);
-              }
-            } catch (e) {
-              console.warn('Failed to parse WebSocket message:', e);
-            }
-          };
-
-          ws.onerror = (error) => {
-            console.error('WebSocket error:', error);
-            reject(error);
-          };
-
-          ws.onclose = () => {
-            console.log('WebSocket closed');
-            resolve({ data: { status: 'complete' } });
-          };
-        });
-      } else {
-        // Use non-streaming mode
-        const response = await axios.post('http://localhost:8000/v1/chat/completions', 
-          {
-            model: 'qwen3:32b',
-            messages,
-            stream: false,
-            max_tokens: 2000,
-            user_id: userId,
-            room_id: 'default-room',
-          },
-          {
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${token}`,
-            }
-          }
-        );
-        
-        console.log("📥 Received chat completion response:", response.data);
-        return response;
-      }
-    } catch (error) {
-      console.error("❌ Chat completion error:", error);
-      throw error;
-    }
-  },
-  
-  // Set user persona preference
-  setPersona: async (personaName: string) => {
-    const token = localStorage.getItem('accessToken');
-    
-    try {
-      const response = await axios.patch('http://localhost:8000/v1/persona', 
-        { persona: personaName },
-        {
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': token ? `Bearer ${token}` : '',
-          }
-        }
+    ws.onopen = () =>
+      ws.send(
+        JSON.stringify({
+          model: 'qwen3:32b',
+          messages,
+          stream: true,
+          max_tokens: 2000,
+          room_id: roomId,
+        })
       );
-      
-      console.log("Set persona response:", response.data);
-      return response.data;
-    } catch (error) {
-      console.error("Error setting persona:", error);
-      throw error;
-    }
+
+    ws.onmessage = ({ data }) => {
+      try {
+        const chunk = JSON.parse(data as string);
+        const delta = chunk.content ?? chunk.delta ?? '';
+        if (delta) {
+          full += delta;
+          onChunk?.(delta);
+        }
+        if (chunk.finish_reason === 'stop' || chunk.done) ws.close();
+      } catch {
+        // plain-text token
+        full += data as string;
+        onChunk?.(data as string);
+      }
+    };
+
+    ws.onerror = reject;
+    ws.onclose = () => resolve({ text: full });
+  }),
+
+  /** legacy wrapper used by ChatInterface.tsx */
+  sendMessage: async (text: string, roomId = 'default-room') => {
+    await chatService.send(
+      [{ role: 'user', content: text }],
+      undefined,
+      roomId
+    );
+    return { status: 'queued' };
   },
-  
-  // Get available personas
+
+  /** GET available personas */
   getPersonas: async () => {
-    const token = localStorage.getItem('accessToken');
-    
-    try {
-      const response = await axios.get('http://localhost:8000/v1/persona/list',
-        {
-          headers: {
-            'Authorization': token ? `Bearer ${token}` : '',
-          }
-        }
-      );
-      
-      return response.data;
-    } catch (error) {
-      console.error("Error getting personas:", error);
-      throw error;
-    }
-  }
+    const { data } = await api.get('/v1/persona/list');
+    return data;                                // string[]
+  },
+
+  /** PATCH to set persona */
+  setPersona: async (personaName: string) => {
+    const { data } = await api.patch('/v1/persona', { persona: personaName });
+    return data;                                // { status, persona }
+  },
 };
 
-export default api; 
+export default api;

@@ -1,65 +1,72 @@
 from temporalio import activity
-import aiohttp
-import os
-import json
-import logging
+import aiohttp, os, json, logging, asyncio
 
 log = logging.getLogger("llm_proxy.activity")
 
+OPENAI_PATH = "/v1/chat/completions"          # ← new endpoint
+
 @activity.defn
-async def call_ollama(model: str, prompt, stream: bool) -> list[str]:
+async def call_ollama(model: str, prompt, stream: bool = True) -> list[str]:
     """
-    Activity that streams from Ollama's chat API and collects chunks.
-    
-    Args:
-        model: Model name to use with Ollama
-        prompt: Either a string prompt or a messages array format
-        stream: Whether to stream the response
+    Streams from Ollama’s OpenAI-compatible endpoint and returns the raw text
+    that an end-user would see (no JSON re-encoding).
     """
-    url = os.getenv("OLLAMA_URL", "http://100.104.68.115:11434")
-    results: list[str] = []
-    
-    # Construct the request payload for chat API
-    if isinstance(prompt, list):
-        # We received a messages array format
-        log.info(f"Using messages format with Ollama API: {len(prompt)} messages")
-        payload = {
-            "model": model,
-            "messages": prompt,  # Use the messages as provided
-            "stream": stream
-        }
+    base = os.getenv("OLLAMA_URL", "http://100.104.68.115:11434")
+    url  = f"{base}{OPENAI_PATH}"
+
+    # ----- build the OpenAI-style request body ----------------------------
+    if isinstance(prompt, list):               # already a messages array
+        payload = {"model": model, "messages": prompt, "stream": stream}
+        log.info("messages-format prompt (%d messages)", len(prompt))
     else:
-        # We received a single string prompt
-        log.info(f"Using single prompt format with Ollama API: {prompt[:50]}...")
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "stream": stream
+            "stream": stream,
         }
-    
-    log.info(f"Calling Ollama API at {url}/api/chat")
-    
+        log.info("single prompt: %.50s …", prompt)
+
+    # ----- call Ollama ----------------------------------------------------
+    results: list[str] = []
     async with aiohttp.ClientSession() as session:
-        async with session.post(f"{url}/api/chat", json=payload) as response:
-            if response.status != 200:
-                error_text = await response.text()
-                log.error(f"Ollama API error: {response.status} - {error_text[:200]}")
-                return [f"Error: {response.status} from Ollama API"]
-                
-            if stream:
-                async for line in response.content:
-                    if line:
-                        try:
-                            data = json.loads(line.decode('utf-8'))
-                            # Extract content from message if it exists
-                            if 'message' in data and 'content' in data['message']:
-                                results.append(data['message']['content'])
-                        except json.JSONDecodeError:
-                            # If it's not JSON, append the raw line
-                            results.append(line.decode('utf-8'))
-            else:
-                data = await response.json()
-                if 'message' in data and 'content' in data['message']:
-                    results.append(data['message']['content'])
-    
+        async with session.post(url, json=payload) as resp:
+            if resp.status != 200:
+                text = await resp.text()
+                log.error("Ollama error %s → %.200s", resp.status, text)
+                return [f"Error {resp.status}: {text[:120]}"]
+
+            if not stream:                     # non-streaming = one JSON blob
+                data    = await resp.json()
+                content = (
+                    data.get("choices", [{}])[0]
+                        .get("message", {})
+                        .get("content")
+                )
+                if content:
+                    results.append(content)
+                return results
+
+            # -------- streaming branch ------------------------------------
+            async for raw in resp.aiter_raw():     # raw SSE bytes
+                for line in raw.split(b"\n"):
+                    if not line or not line.startswith(b"data: "):
+                        continue
+
+                    payload = line.removeprefix(b"data: ").strip()
+                    if payload == b"[DONE]":       # end-of-stream marker
+                        return results
+
+                    try:
+                        chunk = json.loads(payload.decode())
+                        delta = (
+                            chunk.get("choices", [{}])[0]
+                                 .get("delta", {})
+                                 .get("content")
+                        )
+                        if delta is not None:
+                            results.append(delta)
+                    except json.JSONDecodeError:
+                        # fall back to literal text
+                        results.append(payload.decode(errors="ignore"))
+
     return results

@@ -1,86 +1,103 @@
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from temporalio.client import Client as TemporalClient
-from uuid import uuid4
 import logging
 import json
-from .workflows import ChatWorkflow
+import aiohttp
+import os
+import asyncio
 
 app = FastAPI(title="LLM Streaming Proxy")
 log = logging.getLogger("llm_proxy")
+logging.basicConfig(level=logging.INFO)
 
 @app.get("/healthz")
 async def healthz():
-    return {"ok": True}
-
+    """Health check endpoint for the LLM proxy service"""
+    return {
+        "status": "ok",
+        "message": "LLM proxy service is running"
+    }
 
 @app.websocket("/v1/stream")
 async def stream_ws(ws: WebSocket):
     await ws.accept()
     try:
-        data = await ws.receive_json()
-        model = data.get("model")
-        stream = data.get("stream", True)
-        
-        # Convert OpenAI messages to a single prompt string if present
-        prompt = data.get("prompt")
-        if not prompt and "messages" in data:
-            # Join all messages into a single prompt string
-            prompt = ""
-            for msg in data["messages"]:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    prompt += f"{content}\n"
-                elif role == "user":
-                    prompt += f"User: {content}\n"
-                elif role == "assistant":
-                    prompt += f"Assistant: {content}\n"
-            prompt = prompt.strip()
-        
-        if not model or not prompt:
-            log.error("Missing required fields model or prompt/messages")
-            await ws.send_text(json.dumps({"error": "Missing required fields"}))
+        # Expect full OpenAI-style payload
+        payload = await ws.receive_json()
+        payload.setdefault("stream", True)
+        model = payload.get("model")
+
+        if not model or "messages" not in payload:
+            log.error("Missing model or messages in payload")
+            await ws.send_text(json.dumps({"error": "Missing required fields: model + messages"}))
             return
 
-        # Log what we're sending to Temporal
-        log.info(f"Starting workflow with model: {model}")
-        if isinstance(prompt, list):
-            log.info(f"Using messages format with {len(prompt)} messages")
-        else:
-            log.info(f"Using single prompt string: {prompt[:50]}...")
+        ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
+        log.info(f"🧠 Forwarding to Ollama (model={model}) via /v1/chat/completions")
+        log.info(f"Full payload: {json.dumps(payload)}")
 
-        # Connect to Temporal and start the workflow
-        client = await TemporalClient.connect("temporal:7233")
-        
-        # Safety: ensure prompt is a string
-        if isinstance(prompt, list):
-            prompt = '\n'.join(str(x) for x in prompt)
-        log.info(f"Type of model: {type(model)}, prompt: {type(prompt)}, stream: {type(stream)}")
-        log.info(f"Prompt value: {prompt!r}")
+        async with aiohttp.ClientSession() as session:
+            url = f"{ollama_url}/v1/chat/completions"
+            try:
+                async with session.post(url, json=payload, timeout=30.0) as resp:
+                    log.info(f"✅ Ollama responded with status: {resp.status}")
+                    
+                    if resp.status != 200:
+                        text = await resp.text()
+                        log.error(f"❌ Ollama error response: {text}")
+                        await ws.send_text(json.dumps({"error": text}))
+                        return
 
-        # Fixed: Pass arguments correctly
-        payload = {
-            "model": model,
-            "prompt": prompt,
-            "stream": stream
-        }
+                    # Process streaming response
+                    chunk_count = 0
+                    async for raw in resp.content:
+                        log.info(f"Raw chunk received: {raw}")
+                        for line in raw.split(b"\n"):
+                            if not line.startswith(b"data: "):
+                                continue
+                            
+                            chunk = line.removeprefix(b"data: ").strip()
+                            
+                            if chunk == b"[DONE]":
+                                await ws.send_text("[DONE]")
+                                log.info("✅ Ollama stream completed")
+                                return
+                            
+                            try:
+                                # Parse the JSON chunk to access data
+                                chunk_data = json.loads(chunk)
+                                log.info(f"Chunk {chunk_count}: {json.dumps(chunk_data)}")
+                                
+                                # Filter out <think> and </think> tags from Qwen
+                                if (chunk_data.get("choices") and 
+                                    len(chunk_data["choices"]) > 0 and 
+                                    chunk_data["choices"][0].get("delta") and 
+                                    "content" in chunk_data["choices"][0]["delta"]):
+                                    
+                                    content = chunk_data["choices"][0]["delta"]["content"]
+                                    if content == "<think>" or content == "</think>":
+                                        continue
+                                
+                                # Pass through the raw OpenAI-compatible format
+                                # Frontend expects: data.choices[0]
+                                await ws.send_text(chunk.decode("utf-8"))
+                                chunk_count += 1
+                                
+                            except json.JSONDecodeError:
+                                log.warning(f"Non-JSON chunk: {chunk}")
+                                continue
+                            except Exception as e:
+                                log.warning(f"⚠️ Error processing chunk: {str(e)}")
+                                continue
+            except aiohttp.ClientError as e:
+                log.error(f"❌ Ollama request failed: {str(e)}")
+                await ws.send_text(json.dumps({"error": f"LLM service request failed: {str(e)}"}))
+            except asyncio.TimeoutError:
+                log.error("❌ Ollama request timed out")
+                await ws.send_text(json.dumps({"error": "LLM service request timed out"}))
 
-        run_handle = await client.start_workflow(
-            ChatWorkflow,
-            id=f"chat-{uuid4()}",
-            task_queue="llm-queue",
-            args=[payload],  # ✅ wrap in a single dict
-        )
-
-
-        
-        # Await workflow result and stream back
-        chunks = await run_handle.result()
-        for chunk in chunks:
-            await ws.send_text(chunk)
-    
     except WebSocketDisconnect:
         log.info("Client disconnected")
     except Exception as e:
-        log.exception("Error in llm_proxy stream: %s", e)
+        log.exception("💥 Stream error")
+        await ws.send_text(json.dumps({"error": str(e)}))
         await ws.close()

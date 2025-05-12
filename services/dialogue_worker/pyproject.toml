@@ -9,6 +9,7 @@ dependencies = [
   "aiohttp",
   "prometheus-client>=0.20,<1.0",
   "PyJWT>=2.8,<3.0",
+  "websockets",
 ]
 
 [build-system]

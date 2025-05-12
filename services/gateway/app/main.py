@@ -2,6 +2,8 @@
 # Fix imports before anything else
 from pathlib import Path
 import sys
+import os
+import httpx
 
 # Add both the app dir and project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
@@ -81,3 +83,26 @@ app.include_router(chat_queue.router, prefix="/v1")
 app.include_router(search.router)
 app.include_router(memory.router)
 app.include_router(persona.router)  # Add our new persona router
+
+@app.get("/health/all")
+async def check_all_health():
+    return {"ok": True}
+    
+    # Check LLM Proxy
+    async def check_llm_proxy_health():
+        llm_proxy_url = os.getenv("LLM_WS_URL", "ws://llm_proxy:8000")
+        http_url = llm_proxy_url.replace('ws://', 'http://').replace('wss://', 'https://').split('/v1/')[0]
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(f"{http_url}/healthz", timeout=2.0)
+                if resp.status_code == 200:
+                    return True
+                return False
+        except Exception:
+            return False
+    
+    return {
+        "gateway": True,
+        "nats": await check_nats_health(),
+        "llm_proxy": await check_llm_proxy_health()
+    }

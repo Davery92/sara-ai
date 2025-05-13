@@ -31,7 +31,8 @@ services:
       - ./nats/stream.conf:/etc/nats/js.conf:ro
     ports:
       - "4222:4222"                    # client / JetStream traffic
-    environment: *env
+    environment: 
+      NATS_URL: nats://nats:4222
     networks: [backend]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
@@ -202,6 +203,21 @@ services:
     environment:
       - PYTHONPATH=/app  # ensure absolute imports work
     networks: [backend]
+
+
+   # ─────────────────────────────── Frontend ───────────────────────────────
+  frontend:
+    build:
+      context: ../frontend/            # your React app + Dockerfile + nginx.conf live here
+      dockerfile: Dockerfile
+    container_name: sara_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:3000"                   # maps container’s port 3000 → host
+    environment:
+      <<: *env                        # pulls in TZ, PUID, PGID
+    networks:
+      - backend
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:

@@ -40,7 +40,7 @@ services:
       - ../monitoring/grafana/provisioning/:/etc/grafana/provisioning/
       - ../monitoring/grafana/dashboards/:/var/lib/grafana/dashboards/
     ports:
-      - "3000:3000"                         # UI → http://infra-ip:3000
+      - "3002:3000"                         # UI → http://infra-ip:3000
     networks: [ backend ]
 
   # ─────────── Node Exporter ───────────

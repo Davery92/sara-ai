@@ -6,7 +6,7 @@ ENV PYTHONPATH=/app:$PYTHONPATH
 
 COPY services/gateway/requirements.txt .
 # Install dependencies including PyYAML
-RUN pip install --no-cache-dir -r requirements.txt PyYAML httpx
+RUN pip install --no-cache-dir -r requirements.txt PyYAML httpx websockets
 
 # Copy the gateway app code
 COPY services/gateway/app ./app

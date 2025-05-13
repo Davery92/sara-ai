@@ -13,3 +13,4 @@ pgvector>=0.2
 nats-py
 prometheus-client
 bcrypt>=4.0.1
+websockets>=11.0.0

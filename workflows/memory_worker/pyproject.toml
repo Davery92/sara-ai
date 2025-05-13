@@ -20,6 +20,7 @@ dependencies = [
     "pgvector>=0.2",
     "nats-py",
     "prometheus-client",
+    "websockets>=11.0.0",
 ]
 
 [project.optional-dependencies]

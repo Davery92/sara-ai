@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ChatMessage from './ChatMessage';
 import { chatService } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
@@ -12,229 +12,125 @@ interface Message {
   timestamp: Date;
 }
 
-// Define type for axios error
-interface ApiError {
-  response?: {
-    status: number;
-    data?: any;
-  };
-  message?: string;
-}
-
 const ChatInterface: React.FC = () => {
+  const { user } = useAuth();
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState<string>('');
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [tokenError, setTokenError] = useState<boolean>(false);
   const [personas, setPersonas] = useState<string[]>([]);
   const [selectedPersona, setSelectedPersona] = useState<string>('');
   const [darkMode, setDarkMode] = useState<boolean>(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const { user, token } = useAuth();
-  const currentAiMessageRef = useRef<Message | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
-  const roomId = 'default-room'; // You might want to make this dynamic
-  const ackCounter = useRef(0);
 
-  // Debug: Log message state when it changes
-  useEffect(() => {
-    console.log('Current messages:', messages);
-  }, [messages]);
+  const roomId = 'default-room';
 
-  // Initialize dark mode from localStorage
+  // Theme init
   useEffect(() => {
-    const savedDarkMode = localStorage.getItem('darkMode') === 'true';
-    setDarkMode(savedDarkMode);
-    
-    // Apply dark mode class to body
-    if (savedDarkMode) {
-      document.body.classList.add('dark-mode');
-    } else {
-      document.body.classList.remove('dark-mode');
-    }
+    const saved = localStorage.getItem('darkMode') === 'true';
+    setDarkMode(saved);
+    document.body.classList.toggle('dark-mode', saved);
   }, []);
 
-  // Auto-scroll to bottom when messages change
+  // Auto scroll
   useEffect(() => {
-    scrollToBottom();
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // Load available personas
+  // Load personas
   useEffect(() => {
-    const loadPersonas = async () => {
+    const load = async () => {
       try {
-        const personaList = await chatService.getPersonas();
-        setPersonas(personaList);
-        
-        // Default to first persona if available
-        if (personaList.length > 0 && !selectedPersona) {
-          setSelectedPersona(personaList[0]);
+        const list = await chatService.getPersonas();
+        setPersonas(list);
+        if (list.length && !selectedPersona) {
+          setSelectedPersona(list[0]);
         }
-      } catch (error) {
-        console.error('Failed to load personas:', error);
+      } catch (err) {
+        console.error('Failed to load personas:', err);
       }
     };
-    
-    if (user) {
-      loadPersonas();
-    }
-  }, [user]);
+    if (user) load();
+  }, [user, selectedPersona]);
 
-  // Initialize WebSocket connection
-  useEffect(() => {
-    const connectWebSocket = () => {
-      const ws = new WebSocket(`ws://localhost:8000/v1/stream?token=${token}`);
-      
-      ws.onopen = () => {
-        console.log('WebSocket connected');
-      };
-
-      ws.onmessage = (event) => {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.choices && data.choices[0]) {
-            const choice = data.choices[0];
-            if (choice.delta && choice.delta.content) {
-              // Update the last AI message with new content
-              setMessages(prevMessages => {
-                const lastMessage = prevMessages[prevMessages.length - 1];
-                if (lastMessage && !lastMessage.isUser) {
-                  return prevMessages.map((msg, idx) => 
-                    idx === prevMessages.length - 1 
-                      ? { ...msg, content: msg.content + choice.delta.content }
-                      : msg
-                  );
-                }
-                return prevMessages;
-              });
-
-              // Send ACK every 10 chunks
-              ackCounter.current++;
-              if (ackCounter.current % 10 === 0) {
-                ws.send('+ACK');
-              }
-            }
-          }
-        } catch (e) {
-          console.error('Error parsing WebSocket message:', e);
-        }
-      };
-
-      ws.onclose = () => {
-        console.log('WebSocket disconnected');
-        // Attempt to reconnect after a delay
-        setTimeout(connectWebSocket, 3000);
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-
-      wsRef.current = ws;
-    };
-
-    if (token) {
-      connectWebSocket();
-    }
-
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-      }
-    };
-  }, [token]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-  
   const toggleDarkMode = () => {
-    const newDarkMode = !darkMode;
-    setDarkMode(newDarkMode);
-    localStorage.setItem('darkMode', newDarkMode.toString());
-    
-    // Apply/remove the dark-mode class from the body
-    if (newDarkMode) {
-      document.body.classList.add('dark-mode');
-    } else {
-      document.body.classList.remove('dark-mode');
-    }
+    const next = !darkMode;
+    setDarkMode(next);
+    localStorage.setItem('darkMode', String(next));
+    document.body.classList.toggle('dark-mode', next);
   };
-  
-  const handlePersonaChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
-    const persona = event.target.value;
+
+  const handlePersonaChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const persona = e.target.value;
     setSelectedPersona(persona);
-    
     try {
       await chatService.setPersona(persona);
-      
-      // Add a system message to inform user
-      const systemMessage: Message = {
-        id: Date.now().toString() + '-system',
-        content: `Persona changed to ${persona}`,
-        isUser: false,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, systemMessage]);
-    } catch (error) {
-      console.error('Error setting persona:', error);
+      setMessages(prev => [
+        ...prev,
+        {
+          id: `${Date.now()}-system`,
+          content: `Persona changed to ${persona}`,
+          isUser: false,
+          timestamp: new Date(),
+        }
+      ]);
+    } catch (err) {
+      console.error('Error setting persona:', err);
     }
   };
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    
     if (!inputValue.trim() || isLoading) return;
-    
-    const userMsgId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-user`;
-    const userMessage: Message = {
-      id: userMsgId,
-      content: inputValue.trim(),
+
+    const userContent = inputValue.trim();
+    const userMsg: Message = {
+      id: `${Date.now()}-user`,
+      content: userContent,
       isUser: true,
       timestamp: new Date(),
     };
-    
-    // Add user message
-    setMessages(prevMessages => [...prevMessages, userMessage]);
+
+    // append user message
+    setMessages(prev => [...prev, userMsg]);
     setInputValue('');
     setIsLoading(true);
     setTokenError(false);
-    
+
+    // prepare AI bubble
+    const aiMsgId = `${Date.now()}-ai`;
+    setMessages(prev => [
+      ...prev,
+      { id: aiMsgId, content: '', isUser: false, timestamp: new Date() }
+    ]);
+
     try {
-      // 1. First, enqueue the message via REST
-      await chatService.sendMessage(userMessage.content);
-      
-      // 2. Then send the message through WebSocket for streaming
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        const aiMsgId = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}-ai`;
-        const aiMessage: Message = {
-          id: aiMsgId,
-          content: '',
-          isUser: false,
-          timestamp: new Date(),
-        };
-        
-        setMessages(prevMessages => [...prevMessages, aiMessage]);
-        
-        wsRef.current.send(JSON.stringify({
-          model: 'qwen3:32b',
-          messages: [{ role: 'user', content: userMessage.content }],
-          stream: true,
-          room_id: roomId
-        }));
-      } else {
-        throw new Error('WebSocket not connected');
-      }
-    } catch (error) {
-      console.error('Error sending message:', error);
+      await chatService.sendMessage(
+        [{ role: 'user', content: userContent }],
+        (chunk: string) => {
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === aiMsgId
+                ? { ...m, content: m.content + chunk }
+                : m
+            )
+          );
+        },
+        (err: string) => {
+          console.error('Stream error:', err);
+          setTokenError(true);
+        },
+        roomId
+      );
+    } catch (err) {
+      console.error('Send error:', err);
       setTokenError(true);
     } finally {
       setIsLoading(false);
+      // put focus back in the input so user can click/type immediately
+      inputRef.current?.focus();
     }
-  };
-
-  const handleTokenRefreshed = () => {
-    setTokenError(false);
   };
 
   return (
@@ -243,68 +139,59 @@ const ChatInterface: React.FC = () => {
         <h2>Chat with AI</h2>
         <div className="chat-controls">
           {user && <div className="user-info">Logged in as: {user.username}</div>}
-          
           {personas.length > 0 && (
             <div className="persona-selector">
-              <label htmlFor="persona-select">Personality: </label>
-              <select 
+              <label htmlFor="persona-select">Personality:</label>
+              <select
                 id="persona-select"
                 value={selectedPersona}
                 onChange={handlePersonaChange}
                 disabled={isLoading}
               >
-                {personas.map((persona) => (
-                  <option key={persona} value={persona}>
-                    {persona.replace('sara_', '')}
+                {personas.map(p => (
+                  <option key={p} value={p}>
+                    {p.replace('sara_', '')}
                   </option>
                 ))}
               </select>
             </div>
           )}
-          
-          <button 
-            className="theme-toggle" 
-            onClick={toggleDarkMode}
-            aria-label="Toggle dark mode"
-          >
+          <button className="theme-toggle" onClick={toggleDarkMode} aria-label="Toggle theme">
             {darkMode ? '☀️' : '🌙'}
           </button>
         </div>
       </div>
-      
-      {tokenError && (
-        <TokenRefresher />
-      )}
-      
+
+      {tokenError && <TokenRefresher />}
+
       <div className="chat-messages">
         {messages.length === 0 ? (
-          <div className="empty-chat">
-            <p>👋 Start a conversation by sending a message</p>
-          </div>
+          <div className="empty-chat"><p>👋 Start a conversation</p></div>
         ) : (
-          messages.map(message => (
+          messages.map(msg => (
             <ChatMessage
-              key={message.id}
-              content={message.content}
-              isUser={message.isUser}
-              timestamp={message.timestamp}
+              key={msg.id}
+              content={msg.content}
+              isUser={msg.isUser}
+              timestamp={msg.timestamp}
             />
           ))
         )}
         <div ref={messagesEndRef} />
       </div>
-      
+
       <form className="chat-input-container" onSubmit={handleSendMessage}>
         <input
+          ref={inputRef}
           type="text"
           value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
+          onChange={e => setInputValue(e.target.value)}
           placeholder="Type a message..."
           disabled={isLoading}
           className="chat-input"
         />
-        <button 
-          type="submit" 
+        <button
+          type="submit"
           disabled={isLoading || !inputValue.trim()}
           className="send-button"
         >
@@ -315,4 +202,4 @@ const ChatInterface: React.FC = () => {
   );
 };
 
-export default ChatInterface; 
+export default ChatInterface;

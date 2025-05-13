@@ -63,8 +63,10 @@ class GatewayNATS:
         await self.nc.publish(
             req_subject,
             json.dumps(payload).encode(),
-            reply=reply_subject,
-            headers={"Ack": ack_subject.encode()}
+            headers={
+                "Ack":   ack_subject,
+                "Reply": reply_subject   # keep this, worker relies on it
+            }
         )
        
         await push_chat_chunk(payload["room_id"], payload)

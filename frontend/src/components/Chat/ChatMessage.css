@@ -1,3 +1,9 @@
+.chat-messages {
+  /* leave some bottom padding so last bubble never overlaps the input */
+  padding-bottom: 80px;
+  overflow-y: auto;
+}
+
 .chat-message {
   display: flex;
   margin-bottom: 20px;
@@ -57,7 +63,26 @@
   border-bottom-left-radius: 2px;
 }
 
+/* make the input stick to the bottom and always sit above the messages */
+.chat-input-container {
+  position: sticky;
+  bottom: 0;
+  background-color: var(--bg-color);
+  padding: 10px;
+  z-index: 10;
+  display: flex;
+  gap: 8px;
+}
+
+/* ensure the input itself is on top and clickable */
+.chat-input-container input,
+.chat-input-container button {
+  position: relative;
+  z-index: 11;
+}
+
+/* fade-in animation */
 @keyframes fadeIn {
   from { opacity: 0; transform: translateY(10px); }
-  to { opacity: 1; transform: translateY(0); }
-} 
+  to   { opacity: 1; transform: translateY(0); }
+}

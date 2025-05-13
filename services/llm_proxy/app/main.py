@@ -12,92 +12,70 @@ logging.basicConfig(level=logging.INFO)
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint for the LLM proxy service"""
-    return {
-        "status": "ok",
-        "message": "LLM proxy service is running"
-    }
+    return {"status": "ok", "message": "LLM proxy service is running"}
 
 @app.websocket("/v1/stream")
 async def stream_ws(ws: WebSocket):
     await ws.accept()
     try:
-        # Expect full OpenAI-style payload
+        # 1. Read initial payload
         payload = await ws.receive_json()
         payload.setdefault("stream", True)
         model = payload.get("model")
-
         if not model or "messages" not in payload:
             log.error("Missing model or messages in payload")
             await ws.send_text(json.dumps({"error": "Missing required fields: model + messages"}))
             return
 
-        ollama_url = os.getenv('OLLAMA_URL', 'http://localhost:11434')
-        log.info(f"🧠 Forwarding to Ollama (model={model}) via /v1/chat/completions")
-        log.info(f"Full payload: {json.dumps(payload)}")
+        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
+        log.info(f"🧠 Forwarding to Ollama (model={model})…")
+        log.debug(f"Payload → {json.dumps(payload)}")
 
+        # 2. Call Ollama
         async with aiohttp.ClientSession() as session:
-            url = f"{ollama_url}/v1/chat/completions"
-            try:
-                async with session.post(url, json=payload, timeout=30.0) as resp:
-                    log.info(f"✅ Ollama responded with status: {resp.status}")
-                    
-                    if resp.status != 200:
-                        text = await resp.text()
-                        log.error(f"❌ Ollama error response: {text}")
-                        await ws.send_text(json.dumps({"error": text}))
-                        return
+            async with session.post(f"{ollama_url}/v1/chat/completions", json=payload, timeout=30) as resp:
+                log.info(f"✅ Ollama responded with status: {resp.status}")
+                if resp.status != 200:
+                    err = await resp.text()
+                    log.error(f"❌ Ollama error: {err}")
+                    await ws.send_text(json.dumps({"error": err}))
+                    return
 
-                    # Process streaming response
-                    chunk_count = 0
-                    async for raw in resp.content:
-                        log.info(f"Raw chunk received: {raw}")
-                        for line in raw.split(b"\n"):
-                            if not line.startswith(b"data: "):
-                                continue
-                            
-                            chunk = line.removeprefix(b"data: ").strip()
-                            
-                            if chunk == b"[DONE]":
-                                await ws.send_text("[DONE]")
-                                log.info("✅ Ollama stream completed")
-                                return
-                            
-                            try:
-                                # Parse the JSON chunk to access data
-                                chunk_data = json.loads(chunk)
-                                log.info(f"Chunk {chunk_count}: {json.dumps(chunk_data)}")
-                                
-                                # Filter out <think> and </think> tags from Qwen
-                                if (chunk_data.get("choices") and 
-                                    len(chunk_data["choices"]) > 0 and 
-                                    chunk_data["choices"][0].get("delta") and 
-                                    "content" in chunk_data["choices"][0]["delta"]):
-                                    
-                                    content = chunk_data["choices"][0]["delta"]["content"]
-                                    if content == "<think>" or content == "</think>":
-                                        continue
-                                
-                                # Pass through the raw OpenAI-compatible format
-                                # Frontend expects: data.choices[0]
-                                await ws.send_text(chunk.decode("utf-8"))
-                                chunk_count += 1
-                                
-                            except json.JSONDecodeError:
-                                log.warning(f"Non-JSON chunk: {chunk}")
-                                continue
-                            except Exception as e:
-                                log.warning(f"⚠️ Error processing chunk: {str(e)}")
-                                continue
-            except aiohttp.ClientError as e:
-                log.error(f"❌ Ollama request failed: {str(e)}")
-                await ws.send_text(json.dumps({"error": f"LLM service request failed: {str(e)}"}))
-            except asyncio.TimeoutError:
-                log.error("❌ Ollama request timed out")
-                await ws.send_text(json.dumps({"error": "LLM service request timed out"}))
+                # 3. Stream chunks, but suppress the literal “[DONE]”
+                chunk_count = 0
+                async for raw in resp.content:
+                    for line in raw.split(b"\n"):
+                        if not line.startswith(b"data: "):
+                            continue
+
+                        chunk = line[len(b"data: "):].strip()
+                        if chunk == b"[DONE]":
+                            # emit a proper stop event and close
+                            stop_event = {"choices":[{"delta":{},"finish_reason":"stop"}]}
+                            await ws.send_text(json.dumps(stop_event))
+                            log.info("✅ Emitted stop event")
+                            await ws.close()
+                            log.info("✅ WebSocket closed")
+                            return
+
+                        # otherwise pass through the JSON chunk
+                        try:
+                            # sanity‐check parse
+                            data = json.loads(chunk)
+                            log.debug(f"Chunk {chunk_count}: {data}")
+                            await ws.send_text(chunk.decode())
+                            chunk_count += 1
+                        except json.JSONDecodeError:
+                            log.warning(f"Skipping invalid JSON chunk: {chunk}")
+                            continue
 
     except WebSocketDisconnect:
         log.info("Client disconnected")
     except Exception as e:
         log.exception("💥 Stream error")
-        await ws.send_text(json.dumps({"error": str(e)}))
-        await ws.close()
+        # try to inform client, then close
+        try:
+            await ws.send_text(json.dumps({"error": str(e)}))
+            await ws.close()
+        except:
+            pass

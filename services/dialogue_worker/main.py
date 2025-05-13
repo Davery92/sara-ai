@@ -142,6 +142,7 @@ async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: s
                         pass  # Not JSON, continue normal processing
 
                     data = message.encode()
+                    log.info("⇢ to NATS %s : %.120s", reply_subject, data)
                     await nc.publish(reply_subject, data)
                     CHUNKS_RELAYED.labels(model=model_name).inc()
 

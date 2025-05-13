@@ -44,6 +44,8 @@ async def stream_endpoint(ws: WebSocket):
             try:
                 # msg.data can be str OR bytes depending on sender
                 data = msg.data.decode() if isinstance(msg.data, (bytes, bytearray)) else msg.data
+                log.info("⇢ to browser [%s] %.120s", ws.client, data)
+
                 await ws.send_text(data)
     
                 # heartbeat so the worker stays alive
@@ -114,7 +116,6 @@ async def stream_endpoint(ws: WebSocket):
                     await nc.publish(
                         req_subj,
                         json.dumps(payload).encode(),
-                        reply=resp_subj,          # ← add back
                         headers=headers,
                     )
                 except Exception as e:

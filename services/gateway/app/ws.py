@@ -57,15 +57,15 @@ async def stream_endpoint(ws: WebSocket):
         REDIS_TTL   = int(os.getenv("REDIS_CONV_TTL_SECONDS", "3600"))
 
         async def push_to_redis(role: str, text: str, room_id: str):
-            key = f"room:{room_id}:messages"
+            key = f"room:{user_id}:messages"
             entry = json.dumps({"role": role, "content": text})
             await r.lpush(key, entry)
             await r.ltrim(key, 0, MAX_HISTORY - 1)
             await r.expire(key, REDIS_TTL)
-            log.debug(f"Pushed to Redis: {role} message for room {room_id}")
+            log.debug(f"Pushed to Redis: {role} message for room {user_id}")
 
-        async def load_history(room_id: str):
-            key = f"room:{room_id}:messages"
+        async def load_history(user_id: str):
+            key = f"room:{user_id}:messages"
             # 1) grab the raw bytes/strings
             raw = await r.lrange(key, 0, MAX_HISTORY - 1)
             log.debug(f"[Redis raw for {key}]: {raw!r}")
@@ -139,7 +139,7 @@ async def stream_endpoint(ws: WebSocket):
                     if buffered_response:
                         # Store the complete message in Redis
                         buffered_json = json.dumps(buffered_response)
-                        await push_to_redis("assistant", buffered_json, current_room_id)
+                        await push_to_redis("assistant", buffered_json, user_id)
                         log.info(f"Stored complete response for room {current_room_id}")
                     
                     # Reset streaming state
@@ -226,10 +226,10 @@ async def stream_endpoint(ws: WebSocket):
                 user_text = last.get("content", "") or last.get("text", "")
                 
                 # 3) push into Redis under the persistent room key
-                await push_to_redis("user", user_text, room_id)
+                await push_to_redis("user", user_text, user_id)
                 
                 # 4) reload history from Redis
-                history = await load_history(room_id)
+                history = await load_history(user_id)
                 log.debug(f"[Redis history for room {room_id}]: {history}")
                 
                 # 5) overwrite payload.messages with history from Redis

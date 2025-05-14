@@ -151,21 +151,22 @@ export const chatService = {
       }
     
       const choice = msg.choices?.[0] || {};
-      const delta  = choice.delta?.content ?? "";
+      const delta = choice.delta || {};
       const finish = choice.finish_reason;
     
-      // if there’s text, emit it
-      if (delta) {
-        full += delta;
-        onChunk?.(delta);
+      // ✅ Only emit real content chunks
+      if (typeof delta.content === "string") {
+        full += delta.content;
+        onChunk?.(delta.content);
       }
     
-      // always check for stop
+      // ✅ Stop signal
       if (finish === "stop") {
         success = true;
         ws.close();
       }
     };
+    
 
     ws.onerror = (event) => {
       const errorMsg = 'WebSocket error occurred';

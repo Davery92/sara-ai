@@ -26,7 +26,7 @@ const logEvent = (type: string, message: string, details = {}) => {
    Axios instance w/ auth token
    ─────────────────────────── */
 const api = axios.create({
-  baseURL: 'http://localhost:8000',
+  baseURL: `${window.location.protocol}//${window.location.hostname}:8000`,
   headers: { 'Content-Type': 'application/json' },
 });
 
@@ -45,7 +45,7 @@ api.interceptors.response.use(
       try {
         const refreshToken = localStorage.getItem('refreshToken');
         if (!refreshToken) throw new Error('No refresh token available');
-        const { data } = await axios.post('http://localhost:8000/auth/refresh', { refresh_token: refreshToken });
+        const { data } = await axios.post(`${window.location.protocol}//${window.location.hostname}:8000/auth/refresh`, { refresh_token: refreshToken });
         storeTokens(data);
         originalRequest.headers.Authorization = `Bearer ${data.access_token}`;
         return axios(originalRequest);

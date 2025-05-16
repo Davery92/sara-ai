@@ -31,10 +31,19 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import your models’ metadata for autogenerate
+# Ensure all your models are imported here so Base knows about them.
 try:
-    from app.db.models import Base
+    from services.gateway.app.database import Base  # Correct path to Base
+    # Import all modules that contain your models
+    from services.gateway.app.models import artifacts  # Imports your new artifact models
+    # If you have other model files, import them here as well, e.g.:
+    # from services.gateway.app.models import users
+    # from services.gateway.app.models import other_entities
+    
     target_metadata = Base.metadata
-except ImportError:
+except ImportError as e:
+    print(f"Error importing models for Alembic: {e}")
+    print(f"Current sys.path: {sys.path}")
     target_metadata = None
 
 def run_migrations_offline() -> None:

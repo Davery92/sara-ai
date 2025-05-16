@@ -18,10 +18,10 @@ log = logging.getLogger("memory_worker")
 
 # Use local redis client instead of gateway's
 from redis_client import get_redis
-from services.gateway.app.db.session import AsyncSessionLocal
+# from services.gateway.app.db.session import AsyncSessionLocal # Moved into upsert_summary
 
 # Import db_upsert directly
-from services.common.db_upsert import upsert_memory
+# from services.common.db_upsert import upsert_memory # Moved into upsert_summary
 
 # LLM base URL for API calls
 LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
@@ -117,6 +117,10 @@ async def get_embedding(text: str) -> list[float]:
 
 @activity.defn
 async def upsert_summary(room_id: str, summary: str, embedding: list[float]):
+    # Import database-related modules inside the function
+    from services.gateway.app.db.session import AsyncSessionLocal
+    from services.common.db_upsert import upsert_memory
+    
     try:
         async with AsyncSessionLocal() as session:
             await upsert_memory(

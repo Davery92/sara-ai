@@ -4,7 +4,6 @@ from pathlib import Path
 import sys
 import os
 import httpx
-
 # Add both the app dir and project root to Python path
 sys.path.insert(0, str(Path(__file__).parent.absolute()))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.absolute()))
@@ -27,7 +26,7 @@ from .metrics import router as metrics_router
 from .routes.search import router as search_router
 from .routes.memory import router as memory_router
 # Use relative imports for local routes instead of absolute app imports
-from .routes import api, auth, chat_queue, memory, search, messages, persona
+from .routes import api, auth, chat_queue, memory, search, messages, persona, artifacts, files, chats
 from .nats_client import GatewayNATS
 
 nats_client = GatewayNATS("nats://nats:4222")
@@ -71,6 +70,8 @@ async def me(payload: dict = Depends(verify)):
     return {"user": payload["sub"], "iat": payload["iat"]}
 
 
+# ─── Chat management endpoints ───────────────────────────────────────────────
+app.include_router(chats.router)
 
 # ─── LLM chat completions ────────────────────────────────────────────────────
 app.include_router(chat_router)
@@ -83,6 +84,8 @@ app.include_router(chat_queue.router, prefix="/v1")
 app.include_router(search.router)
 app.include_router(memory.router)
 app.include_router(persona.router)  # Add our new persona router
+app.include_router(artifacts.router)  # Add artifacts router
+app.include_router(files.router)  # Add files router for file uploads
 
 @app.get("/health/all")
 async def check_all_health():

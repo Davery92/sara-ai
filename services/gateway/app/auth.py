@@ -3,9 +3,11 @@
 import os, time, logging
 from datetime import timedelta
 from uuid import uuid4
+from uuid import UUID
+import uuid
 
 import jwt  # pip install "pyjwt[crypto]"
-from fastapi import HTTPException, status, Depends
+from fastapi import HTTPException, status, Depends, Header
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
@@ -108,27 +110,107 @@ class AuthMiddleware(BaseHTTPMiddleware):
         if request.method == "OPTIONS":
             return await call_next(request)
             
-        if request.url.path.startswith((
+        # Path normalization: Strip /v1 prefix if present for path checking
+        path = request.url.path
+        
+        # Fix double slashes in path - normalize the path
+        while '//' in path:
+            path = path.replace('//', '/')
+            
+        normalized_path = path[3:] if path.startswith("/v1") else path
+        
+        # Always allow these paths without authentication
+        if normalized_path.startswith((
             "/healthz", "/metrics",
             "/signup",  "/auth/signup",
             "/login",   "/auth/login",
-            "/refresh", "/auth/refresh",   # ← add these two
-            "/v1/search",
+            "/refresh", "/auth/refresh",
+            # Note: /auth/me is intentionally NOT included here as it requires auth
+            "/search",
         )):
             return await call_next(request)
         
         # Log the authorization header for debugging
         auth_header = request.headers.get("authorization", "")
-        log.info(f"Request to {request.url.path} with auth: {auth_header[:20] + '...' if auth_header else 'none'}")
+        log.info(f"Request to {path} with auth: {auth_header[:20] + '...' if auth_header else 'none'}")
         
         try:
             creds = await security(request)
             payload = await verify(creds)
             request.state.user = payload["sub"]
         except HTTPException as exc:
-            log.warning(f"Auth failed for {request.url.path}: {exc.detail}")
+            log.warning(f"Auth failed for {path}: {exc.detail}")
             return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
         return await call_next(request)
 
 
 auth_middleware = AuthMiddleware
+
+async def get_current_user_id(authorization: str = Header(None)) -> uuid.UUID:
+    if authorization is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated, Authorization header is missing",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    parts = authorization.split()
+
+    if parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication scheme",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    elif len(parts) == 1:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    elif len(parts) > 2:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token format",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = parts[1]
+    
+    try:
+        payload = jwt.decode(token, _SECRET, algorithms=[_ALG])
+        user_id_str = payload.get("sub")
+        if user_id_str is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, # 403 as token is valid but sub missing
+                detail="Invalid token: 'sub' (subject/user ID) claim missing"
+            )
+        
+        # Ensure the user_id is a valid UUID
+        try:
+            return uuid.UUID(user_id_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Invalid token: 'sub' claim '{user_id_str}' is not a valid UUID"
+            )
+
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token has expired",
+            headers={"WWW-Authenticate": "Bearer error=\"invalid_token\", error_description=\"The token has expired\""},
+        )
+    except jwt.InvalidTokenError as e: # Catches various other JWT errors (invalid signature, malformed, etc.)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token: {str(e)}",
+            headers={"WWW-Authenticate": "Bearer error=\"invalid_token\""},
+        )
+    except Exception as e: # Catch-all for unexpected errors during parsing
+        # Log this error server-side for investigation
+        # log.error(f"Unexpected error during token decoding: {str(e)}") 
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Could not process authentication token due to an internal error"
+        )

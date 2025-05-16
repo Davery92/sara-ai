@@ -1,19 +1,51 @@
 import json
 import logging
 import jwt
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException
 from services.common.nats_helpers import nats_connect, session_subjects
 from .auth import _SECRET, _ALG  
 import os 
 from .redis_client import get_redis
 from websockets.exceptions import ConnectionClosedOK
+import httpx
+
 
 
 router = APIRouter()
 log = logging.getLogger("gateway.ws")
 
+# Get Ollama base URL from environment
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
+
+
+@router.get("/v1/models/available")
+@router.get("/api/models/available")
+async def list_models():
+    """Fetch available models from Ollama"""
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{LLM_BASE_URL}/api/tags")
+            if response.status_code != 200:
+                raise HTTPException(status_code=500, detail="Failed to fetch models from Ollama")
+            
+            models_data = response.json()
+            models = []
+            
+            for model in models_data.get("models", []):
+                models.append({
+                    "id": model["name"],
+                    "name": model["name"].replace("-", " ").title(),
+                    "description": f"Ollama {model['name']} model"
+                })
+            
+            return models
+    except Exception as e:
+        log.error(f"Error fetching models: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @router.websocket("/v1/stream")
+@router.websocket("/api/stream")
 async def stream_endpoint(ws: WebSocket):
     await ws.accept()
     nc = None

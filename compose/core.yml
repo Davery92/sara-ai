@@ -205,19 +205,7 @@ services:
     networks: [backend]
 
 
-   # ─────────────────────────────── Frontend ───────────────────────────────
-  frontend:
-    build:
-      context: ../frontend/            # your React app + Dockerfile + nginx.conf live here
-      dockerfile: Dockerfile
-    container_name: sara_frontend
-    restart: unless-stopped
-    ports:
-      - "3000:3000"                   # maps container’s port 3000 → host
-    environment:
-      <<: *env                        # pulls in TZ, PUID, PGID
-    networks:
-      - backend
+   
 
   # ─────────────────────────── Healthcheck orchestrator ───────────────────────────
   healthcheck:
@@ -269,7 +257,7 @@ services:
     environment:
       <<: *env
       ENV: prod
-      LLM_BASE_URL: "http://100.104.68.115:11434"
+      LLM_BASE_URL: "http://host.docker.internal:11434"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: "${POSTGRES_USER}"
@@ -293,7 +281,7 @@ services:
     env_file: [ ../.env ]
     environment:
       <<: *env
-      OLLAMA_URL: "http://100.104.68.115:11434"
+      OLLAMA_URL: "http://host.docker.internal:11434"
     networks: [backend]
     depends_on:
       nats:     { condition: service_healthy }

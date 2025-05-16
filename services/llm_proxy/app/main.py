@@ -27,8 +27,18 @@ async def stream_ws(ws: WebSocket):
             await ws.send_text(json.dumps({"error": "Missing required fields: model + messages"}))
             return
 
-        ollama_url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-        log.info(f"🧠 Forwarding to Ollama (model={model})…")
+        # Explicitly log what os.getenv returns BEFORE any default is applied
+        raw_ollama_url_env = os.getenv("OLLAMA_URL")
+        log.info(f"RAW OLLAMA_URL from env: '{raw_ollama_url_env}'")
+
+        ollama_url = raw_ollama_url_env # Use the raw value
+        if not ollama_url:
+            log.error("CRITICAL: OLLAMA_URL is not set for llm_proxy FastAPI app!")
+            # Forcing it here if not set - this indicates a problem with env var propagation
+            ollama_url = "http://100.104.68.115:11434" 
+            log.warning(f"OLLAMA_URL was not set, forcing to: {ollama_url}")
+        
+        log.info(f"🧠 Forwarding to Ollama (model={payload.get('model')}) at {ollama_url}...")
         log.debug(f"Payload → {json.dumps(payload)}")
 
         # 2. Call Ollama
@@ -41,7 +51,7 @@ async def stream_ws(ws: WebSocket):
                     await ws.send_text(json.dumps({"error": err}))
                     return
 
-                # 3. Stream chunks, but suppress the literal “[DONE]”
+                # 3. Stream chunks, but suppress the literal "DONE"
                 chunk_count = 0
                 async for raw in resp.content:
                     for line in raw.split(b"\n"):

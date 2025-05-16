@@ -1,18 +1,21 @@
 # services/gateway/app/routes/auth.py
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_
-from ..auth import _SECRET, _ALG, login as issue_tokens
+from ..auth import _SECRET, _ALG, login as issue_tokens, verify as verify_token
 from ..redis_client import get_redis
 from fastapi import status
 from ..db.session import get_session
 from ..db.models import User
 from ..utils.password import hash_password, verify_password
+import logging
 
+# Set up logger
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -31,6 +34,10 @@ class RefreshIn(BaseModel):
 class SignupRequest(BaseModel):
     username: str
     password: str
+
+class UserOut(BaseModel):
+    username: str
+    id: str
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED, response_model=TokenOut)
 async def signup(req: SignupRequest, session: AsyncSession = Depends(get_session)):
@@ -68,6 +75,82 @@ async def login_route(payload: LoginIn, session: AsyncSession = Depends(get_sess
         )
     
     return issue_tokens(payload.username)
+
+@router.get("/me")
+async def get_current_user(request: Request):
+    """
+    Get the current authenticated user's profile
+    
+    This is a simplified endpoint that manually extracts and verifies the token
+    """
+    try:
+        auth_header = request.headers.get('authorization')
+        if not auth_header:
+            log.warning("No authorization header for /auth/me")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Missing authorization header"
+            )
+        
+        # Extract token
+        parts = auth_header.split()
+        if len(parts) != 2 or parts[0].lower() != 'bearer':
+            log.warning(f"Invalid auth header format: {auth_header[:20]}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED, 
+                detail="Invalid authorization format"
+            )
+        
+        token = parts[1]
+        
+        # Decode token manually
+        try:
+            log.info(f"Decoding token for /auth/me: {token[:20]}...")
+            payload = jwt.decode(token, _SECRET, algorithms=[_ALG])
+            
+            # Check token type
+            if payload.get('type') != 'access':
+                log.warning("Token is not an access token")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Not an access token"
+                )
+                
+            username = payload.get('sub')
+            if not username:
+                log.warning("Token missing 'sub' claim")
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token: missing user identifier"
+                )
+            
+            log.info(f"Token verified successfully for user {username}")
+            return {
+                "user": username,
+                "iat": payload.get("iat")
+            }
+            
+        except jwt.ExpiredSignatureError:
+            log.warning("Token expired")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Token expired"
+            )
+        except jwt.PyJWTError as e:
+            log.warning(f"Invalid token: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid token: {str(e)}"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Unexpected error in /auth/me: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to process authentication"
+        )
 
 @router.post("/refresh", response_model=TokenOut)
 async def refresh_route(payload: RefreshIn):

@@ -1,13 +1,13 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { useWebSocket as useWebSocketContext, WebSocketStatus, WS_MESSAGE_EVENT } from '@/context/websocket-context';
 import type { UIMessage } from 'ai';
 import { generateUUID } from '@/lib/utils';
+import { useWebSocket as useWebSocketContextRoot, WebSocketStatus, WS_MESSAGE_EVENT } from '@/context/websocket-context';
 
 // Interface for the hook options
 export interface UseChatWebSocketOptions {
-  chatId: string;
+  chatId?: string;
   initialMessages?: UIMessage[];
   modelId?: string;
   onMessagesUpdate?: (messages: UIMessage[]) => void;
@@ -34,12 +34,12 @@ export function useChatWebSocket({
 }: UseChatWebSocketOptions): ChatWebSocketReturnType {
   const [messages, setMessages] = useState<UIMessage[]>(initialMessages);
   const { 
+    wsInstance,
     wsStatus, 
     connect, 
-    disconnect, 
-    sendMessage: sendWsMessage, 
-    currentChatId 
-  } = useWebSocketContext();
+    sendMessage: sendRawWsMessageViaContext,
+    currentChatId: currentChatIdFromContext 
+  } = useWebSocketContextRoot();
   
   const currentAssistantMessageIdRef = useRef<string | null>(null);
   const hasConnectedRef = useRef<boolean>(false);
@@ -50,21 +50,21 @@ export function useChatWebSocket({
     if (!chatId) return;
     
     // Only connect if we haven't already connected or if the chatId has changed
-    if (!hasConnectedRef.current || currentChatId !== chatId) {
-      console.log(`Connecting to chat room: ${chatId}`);
+    if (!hasConnectedRef.current || currentChatIdFromContext !== chatId) {
+      console.log(`[WS_HOOK] Effect: Connecting to chat room: ${chatId}`);
       connect(chatId);
       hasConnectedRef.current = true;
     }
     
     // Clean up when component unmounts or chatId changes
     return () => {
-      if (hasConnectedRef.current && currentChatId === chatId) {
+      if (hasConnectedRef.current && currentChatIdFromContext === chatId) {
         console.log(`Disconnecting from chat room: ${chatId}`);
-        disconnect();
+        // disconnect();
         hasConnectedRef.current = false;
       }
     };
-  }, [chatId, currentChatId, connect, disconnect]);
+  }, [chatId, currentChatIdFromContext, connect]);
 
   // Pass status changes to the callback
   useEffect(() => {
@@ -73,120 +73,144 @@ export function useChatWebSocket({
 
   // Initialize messages when initialMessages changes
   useEffect(() => {
-    if (initialMessages && initialMessages.length > 0) {
-      setMessages(initialMessages);
+    if (initialMessages && JSON.stringify(initialMessages) !== JSON.stringify(messages)) {
+        setMessages(initialMessages);
     }
   }, [initialMessages]);
 
   // Wrapper for sending messages to format them correctly
   const sendMessage = useCallback((messageText: string, messageModelId?: string): void => {
     if (!messageText.trim()) return;
+    console.log(`[WS_HOOK] sendMessage called with: "${messageText}" for chat ${chatId}`);
+
+    if (!wsInstance || wsInstance.readyState !== WebSocket.OPEN) {
+        console.warn("[WS_HOOK] WebSocket not connected. Attempting to connect before sending.");
+        if (chatId) {
+            connect(chatId); 
+        }
+        onError?.("WebSocket not ready, message not sent. Please wait or try again.");
+        return;
+    }
 
     try {
-      // If we're not connected to the right chat room, connect first
-      if (currentChatId !== chatId) {
-        console.log(`Connecting to chat room ${chatId} before sending message`);
-        connect(chatId);
-        
-        // This approach assumes the WebSocketContext will queue messages
-        // if they're sent before the connection is established
-        hasConnectedRef.current = true;
-      }
-
       const payload = {
-        room_id: chatId,
+        room_id: chatId, 
         msg: messageText,
         model: messageModelId || modelId
       };
 
-      // Create a message ID for the assistant's response that we'll expect
-      const assistantMessageId = generateUUID();
-      currentAssistantMessageIdRef.current = assistantMessageId;
+      const assistantResponseId = generateUUID();
+      currentAssistantMessageIdRef.current = assistantResponseId;
+      console.log(`[WS_HOOK] Set currentAssistantMessageIdRef for upcoming assistant message: ${assistantResponseId}`);
 
-      // Send the message over WebSocket
-      sendWsMessage(payload);
+      sendRawWsMessageViaContext(payload); 
     } catch (error) {
-      console.error('Error sending message:', error);
+      console.error('[WS_HOOK] Error in sendMessage:', error);
       onError?.(error instanceof Error ? error.message : 'Error sending message');
     }
-  }, [chatId, modelId, onError, sendWsMessage, connect, currentChatId]);
+  }, [chatId, modelId, onError, sendRawWsMessageViaContext, wsInstance, connect]);
 
   // Set up message handler for WebSocket responses
   useEffect(() => {
-    // Define the handler function
     const handleWebSocketMessage = (event: Event) => {
       try {
         const customEvent = event as CustomEvent;
         const data = customEvent.detail;
         
-        // Check if this is a specialized message type (like artifact)
-        if (data.type && data.payload) {
+        if (data.type && data.payload) { 
           onMessage?.(data);
           return;
         }
 
-        // Handle standard chat message
+        if (data.error) {
+          console.error("[WS_HOOK] Error message from WebSocket:", data.error);
+          onError?.(typeof data.error === 'string' ? data.error : JSON.stringify(data.error));
+          currentAssistantMessageIdRef.current = null;
+          return;
+        }
+        
         if (data.choices && data.choices.length > 0) {
           const choice = data.choices[0];
           const delta = choice.delta || {};
+          const contentChunk = delta.content;
 
-          // If the message has content, update the messages
-          if (delta.content) {
+          if (contentChunk) {
             setMessages(prevMessages => {
-              const assistantMessageId = currentAssistantMessageIdRef.current;
-              
-              // Check if we already have an assistant message being built
-              const assistantMessageIndex = prevMessages.findIndex(
-                msg => msg.role === 'assistant' && msg.id === assistantMessageId
-              );
+              const assistantMessageIdForThisStream = currentAssistantMessageIdRef.current;
 
-              if (assistantMessageIndex >= 0) {
-                // Update existing message
-                const updatedMessages = [...prevMessages];
-                updatedMessages[assistantMessageIndex] = {
-                  ...updatedMessages[assistantMessageIndex],
-                  content: updatedMessages[assistantMessageIndex].content + delta.content
+              if (!assistantMessageIdForThisStream) {
+                console.warn("[WS_HOOK] Received content chunk but no currentAssistantMessageIdRef. Creating new message with new ID.");
+                const newId = generateUUID();
+                const newMessage: UIMessage = {
+                  id: newId,
+                  role: 'assistant',
+                  content: contentChunk,
+                  parts: [{ type: 'text', text: contentChunk }],
+                  createdAt: new Date(),
                 };
-                onMessagesUpdate?.(updatedMessages);
-                return updatedMessages;
+                return [...prevMessages, newMessage];
+              }
+
+              const lastMessage = prevMessages.length > 0 ? prevMessages[prevMessages.length - 1] : null;
+              if (lastMessage && lastMessage.id === assistantMessageIdForThisStream && lastMessage.role === 'assistant') {
+                const updatedContent = lastMessage.content + contentChunk;
+                const updatedLastMessage: UIMessage = {
+                  ...lastMessage,
+                  content: updatedContent,
+                  parts: [{ type: 'text', text: updatedContent }],
+                };
+                return [...prevMessages.slice(0, -1), updatedLastMessage];
               } else {
-                // Create new assistant message
-                const newMessage = {
-                  id: assistantMessageId || generateUUID(),
-                  role: 'assistant' as const,
-                  content: delta.content
+                console.log(`[WS_HOOK] First chunk for new assistant message ${assistantMessageIdForThisStream}. Content: "${contentChunk}"`);
+                const newMessage: UIMessage = {
+                  id: assistantMessageIdForThisStream,
+                  role: 'assistant',
+                  content: contentChunk,
+                  parts: [{ type: 'text', text: contentChunk }],
+                  createdAt: new Date(),
                 };
-                const updatedMessages = [...prevMessages, newMessage as UIMessage];
-                onMessagesUpdate?.(updatedMessages);
-                return updatedMessages;
+                return [...prevMessages, newMessage];
               }
             });
           }
 
-          // If this is the end of the message
-          if (choice.finish_reason === 'stop') {
-            currentAssistantMessageIdRef.current = null;
+          if (choice.finish_reason === 'stop' || data.done === true) {
+            console.log("[WS_HOOK] Assistant message stream finished.");
+            currentAssistantMessageIdRef.current = null; 
           }
+        } else if (data.text) { 
+            console.warn("[WS_HOOK] Received message without 'choices' array, treating 'text' as content:", data.text);
+            setMessages(prevMessages => {
+                const assistantMessageId = currentAssistantMessageIdRef.current || generateUUID();
+                if (!currentAssistantMessageIdRef.current) {
+                    currentAssistantMessageIdRef.current = assistantMessageId;
+                }
+                const newMessage: UIMessage = {
+                    id: assistantMessageId,
+                    role: 'assistant',
+                    content: data.text,
+                    parts: [{type: 'text', text: data.text}],
+                    createdAt: new Date(),
+                };
+                return [...prevMessages, newMessage];
+            });
         }
       } catch (error) {
-        console.error('Error handling WebSocket message:', error);
+        console.error('[WS_HOOK] Error handling WebSocket message in hook:', error);
       }
     };
 
-    // Store the handler in a ref so we can remove the same function reference later
-    messageListenerRef.current = handleWebSocketMessage;
-
-    // Add the event listener to the global window object
+    // Store the listener in a ref to ensure the same function is removed
+    messageListenerRef.current = handleWebSocketMessage; 
     window.addEventListener(WS_MESSAGE_EVENT, handleWebSocketMessage);
-
+    
     return () => {
-      // Remove the event listener using the same function reference
       if (messageListenerRef.current) {
         window.removeEventListener(WS_MESSAGE_EVENT, messageListenerRef.current);
-        messageListenerRef.current = null;
+        messageListenerRef.current = null; // Clear the ref after removing
       }
     };
-  }, [onMessage, onMessagesUpdate]);
+  }, [onMessage, setMessages, onError]);
 
   return {
     messages,

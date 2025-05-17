@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Path
 from pydantic import BaseModel, Field
+from pydantic.alias_generators import to_camel
 from typing import List, Optional
 from uuid import UUID, uuid4
 from datetime import datetime
@@ -18,6 +19,11 @@ router = APIRouter(tags=["chats"])
 class ChatBase(BaseModel):
     title: Optional[str] = "New Chat"
     visibility: str = "private"  # private or public
+
+    class Config:
+        alias_generator = to_camel
+        populate_by_name = True
+        from_attributes = True
 
 class ChatCreate(ChatBase):
     id: Optional[str] = None
@@ -38,16 +44,18 @@ class MessageBase(BaseModel):
     content: str
     parts: Optional[List[dict]] = None
 
+    class Config:
+        alias_generator = to_camel
+        populate_by_name = True
+        from_attributes = True
+
 class MessageCreate(MessageBase):
     pass
 
 class MessageResponse(MessageBase):
     id: str
-    chat_id: str
+    chat_id: str = Field(..., alias="chatId")
     created_at: datetime
-    
-    class Config:
-        from_attributes = True
 
 # Chat routes
 @router.post("/api/chats", response_model=ChatResponse, status_code=201)
@@ -170,7 +178,7 @@ async def get_chat_messages(
             role="user",
             content="Hello, assistant!",
             parts=[{"type": "text", "text": "Hello, assistant!"}],
-            created_at=now.isoformat()  # Explicitly convert to ISO string
+            created_at=now
         ),
         MessageResponse(
             id=str(uuid4()),
@@ -178,6 +186,6 @@ async def get_chat_messages(
             role="assistant",
             content="Hello! How can I help you today?",
             parts=[{"type": "text", "text": "Hello! How can I help you today?"}],
-            created_at=now.isoformat()  # Explicitly convert to ISO string
+            created_at=now
         )
     ] 

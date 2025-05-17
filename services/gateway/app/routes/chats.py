@@ -55,7 +55,7 @@ class MessageCreate(MessageBase):
 class MessageResponse(MessageBase):
     id: str
     chat_id: str = Field(..., alias="chatId")
-    created_at: datetime
+    created_at: datetime = Field(..., alias="createdAt")
 
 # Chat routes
 @router.post("/api/chats", response_model=ChatResponse, status_code=201)
@@ -169,7 +169,6 @@ async def get_chat_messages(
     db: AsyncSession = Depends(get_session)
 ):
     """Get all messages for a specific chat"""
-    # In a real implementation, you would query the database
     now = datetime.utcnow()
     return [
         MessageResponse(

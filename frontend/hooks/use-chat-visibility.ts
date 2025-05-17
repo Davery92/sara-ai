@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import useSWR, { useSWRConfig } from 'swr';
 import { unstable_serialize } from 'swr/infinite';
 import {
@@ -18,6 +18,7 @@ export function useChatVisibility({
   chatId: string;
   initialVisibilityType: VisibilityType;
 }) {
+  console.log(`[useChatVisibility] Hook initialized for chatId: ${chatId}`);
   const { mutate, cache } = useSWRConfig();
   const { authenticatedFetch } = useAuthenticatedFetch();
   
@@ -32,7 +33,7 @@ export function useChatVisibility({
     },
   );
 
-  const visibilityType = useMemo(() => {
+  const visibilityType = useCallback(() => {
     if (chatPages) {
       const allChats = chatPages.flat();
       const chatInHistory = allChats.find((chat) => chat.id === chatId);
@@ -41,35 +42,40 @@ export function useChatVisibility({
     return localVisibility || initialVisibilityType;
   }, [chatPages, chatId, localVisibility, initialVisibilityType]);
 
-  const setVisibilityType = async (updatedVisibilityType: VisibilityType) => {
-    setLocalVisibility(updatedVisibilityType, false);
+  const [visibility, setVisibility] = useState<VisibilityType>(visibilityType());
 
-    mutate(
-      historyKey,
-      (currentChatPages: Chat[][] | undefined) => {
-        if (!currentChatPages) return currentChatPages;
-        return currentChatPages.map(page => 
-          page.map(chat => 
-            chat.id === chatId ? { ...chat, visibility: updatedVisibilityType } : chat
-          )
-        );
-      },
-      false
-    );
+  useEffect(() => {
+    setVisibility(visibilityType());
+  }, [visibilityType]);
+
+  const updateChatVisibility = useCallback(async (newVisibility: VisibilityType) => {
+    if (!chatId) {
+      toast({ type: 'error', description: 'Chat ID is missing, cannot update visibility.' });
+      return;
+    }
+
+    setVisibility(newVisibility);
 
     try {
-      await authenticatedFetch(`/v1/chats/${chatId}`, {
+      const response = await authenticatedFetch(`/v1/chats/${chatId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ visibility: updatedVisibilityType }),
+        body: JSON.stringify({ visibility: newVisibility }),
       });
-      toast({ type: 'success', description: 'Chat visibility updated.' });
-    } catch (error) {
-      toast({ type: 'error', description: 'Failed to update chat visibility.' });
-      setLocalVisibility(visibilityType, false);
-      mutate(historyKey);
-    }
-  };
 
-  return { visibilityType, setVisibilityType };
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.detail || 'Failed to update chat visibility');
+      }
+      toast({ type: 'success', description: `Chat visibility set to ${newVisibility}.` });
+    } catch (error) {
+      setVisibility(visibility);
+      toast({ type: 'error', description: error instanceof Error ? error.message : 'An unknown error occurred' });
+    }
+  }, [chatId, authenticatedFetch, visibility]);
+
+  return {
+    visibilityType: visibility,
+    updateChatVisibility,
+  };
 }

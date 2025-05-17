@@ -17,75 +17,154 @@ async def healthz():
 @app.websocket("/v1/stream")
 async def stream_ws(ws: WebSocket):
     await ws.accept()
+    ollama_session = None
+    ollama_response = None
     try:
-        # 1. Read initial payload
         payload = await ws.receive_json()
         payload.setdefault("stream", True)
         model = payload.get("model")
         if not model or "messages" not in payload:
             log.error("Missing model or messages in payload")
             await ws.send_text(json.dumps({"error": "Missing required fields: model + messages"}))
+            await ws.close()
             return
 
-        # Explicitly log what os.getenv returns BEFORE any default is applied
         raw_ollama_url_env = os.getenv("OLLAMA_URL")
-        log.info(f"RAW OLLAMA_URL from env: '{raw_ollama_url_env}'")
-
-        ollama_url = raw_ollama_url_env # Use the raw value
+        ollama_url = raw_ollama_url_env
         if not ollama_url:
-            log.error("CRITICAL: OLLAMA_URL is not set for llm_proxy FastAPI app!")
-            # Forcing it here if not set - this indicates a problem with env var propagation
-            ollama_url = "http://100.104.68.115:11434" 
-            log.warning(f"OLLAMA_URL was not set, forcing to: {ollama_url}")
+            ollama_url = "http://100.104.68.115:11434"
+            log.warning(f"OLLAMA_URL was not set, defaulting to: {ollama_url}")
         
-        log.info(f"🧠 Forwarding to Ollama (model={payload.get('model')}) at {ollama_url}...")
+        log.info(f"🧠 Forwarding to Ollama (model={model}) at {ollama_url}...")
         log.debug(f"Payload → {json.dumps(payload)}")
 
-        # 2. Call Ollama
-        async with aiohttp.ClientSession() as session:
-            async with session.post(f"{ollama_url}/v1/chat/completions", json=payload, timeout=30) as resp:
-                log.info(f"✅ Ollama responded with status: {resp.status}")
-                if resp.status != 200:
-                    err = await resp.text()
-                    log.error(f"❌ Ollama error: {err}")
-                    await ws.send_text(json.dumps({"error": err}))
-                    return
+        ollama_session = aiohttp.ClientSession()
+        ollama_response = await ollama_session.post(
+            f"{ollama_url}/v1/chat/completions", 
+            json=payload, 
+            timeout=aiohttp.ClientTimeout(total=180, connect=10)
+        )
+        
+        log.info(f"✅ Ollama responded with status: {ollama_response.status}")
+        if ollama_response.status != 200:
+            err_text = await ollama_response.text()
+            log.error(f"❌ Ollama error {ollama_response.status}: {err_text[:500]}")
+            await ws.send_text(json.dumps({"error": f"Ollama API Error: {err_text[:200]}"}))
+            return
 
-                # 3. Stream chunks, but suppress the literal "DONE"
-                chunk_count = 0
-                async for raw in resp.content:
-                    for line in raw.split(b"\n"):
-                        if not line.startswith(b"data: "):
+        chunk_count = 0
+        outer_loop_break = False
+        async for raw_chunk_bytes in ollama_response.content.iter_any():
+            if not raw_chunk_bytes:
+                continue
+
+            if ws.client_state == WebSocketDisconnect:
+                log.info("Client WebSocket disconnected during Ollama stream.")
+                break 
+            
+            try:
+                full_chunk_str = raw_chunk_bytes.decode('utf-8').strip()
+                if full_chunk_str.startswith("data: "):
+                    sse_payload_str = full_chunk_str.removeprefix("data: ").strip()
+                    if sse_payload_str == "[DONE]":
+                        stop_event = {"choices":[{"delta":{},"finish_reason":"stop", "index": 0}],"model": model, "id": ""}
+                        await ws.send_text(json.dumps(stop_event))
+                        log.info(f"✅ Emitted stop event due to '[DONE]' after {chunk_count} chunks.")
+                        outer_loop_break = True
+                        break
+                    
+                    data = json.loads(sse_payload_str)
+                    await ws.send_text(sse_payload_str)
+                    chunk_count += 1
+                    if data.get("choices", [{}])[0].get("finish_reason") == "stop" or data.get("done") == True:
+                        log.info(f"✅ Detected finish_reason or done in single SSE chunk {chunk_count}.")
+                        outer_loop_break = True
+                        break
+                elif full_chunk_str:
+                    data = json.loads(full_chunk_str)
+                    await ws.send_text(full_chunk_str)
+                    chunk_count += 1
+                    if data.get("choices", [{}])[0].get("finish_reason") == "stop" or data.get("done") == True:
+                        log.info(f"✅ Detected finish_reason or done in single JSON chunk {chunk_count}.")
+                        outer_loop_break = True
+                        break
+            except json.JSONDecodeError:
+                try:
+                    chunk_lines = raw_chunk_bytes.decode('utf-8').splitlines()
+                    for line_str in chunk_lines:
+                        line_str = line_str.strip()
+                        if not line_str.startswith("data: "):
                             continue
-
-                        chunk = line[len(b"data: "):].strip()
-                        if chunk == b"[DONE]":
-                            # emit a proper stop event and close
-                            stop_event = {"choices":[{"delta":{},"finish_reason":"stop"}]}
+                        
+                        sse_payload_str = line_str.removeprefix("data: ").strip()
+                        if sse_payload_str == "[DONE]":
+                            stop_event = {"choices":[{"delta":{},"finish_reason":"stop", "index": 0}],"model": model, "id": ""}
                             await ws.send_text(json.dumps(stop_event))
-                            log.info("✅ Emitted stop event")
-                            await ws.close()
-                            log.info("✅ WebSocket closed")
-                            return
+                            log.info(f"✅ Emitted stop event due to '[DONE]' from multi-line chunk after {chunk_count} total chunks.")
+                            outer_loop_break = True
+                            break 
 
-                        # otherwise pass through the JSON chunk
-                        try:
-                            # sanity‐check parse
-                            data = json.loads(chunk)
-                            log.debug(f"Chunk {chunk_count}: {data}")
-                            await ws.send_text(chunk.decode())
-                            chunk_count += 1
-                        except json.JSONDecodeError:
-                            log.warning(f"Skipping invalid JSON chunk: {chunk}")
-                            continue
+                        data = json.loads(sse_payload_str)
+                        await ws.send_text(sse_payload_str)
+                        chunk_count += 1
+                        if data.get("choices", [{}])[0].get("finish_reason") == "stop" or data.get("done") == True:
+                            log.info(f"✅ Detected finish_reason or done in multi-line SSE chunk {chunk_count}.")
+                            outer_loop_break = True
+                            break
+                    if outer_loop_break:
+                        break
+                except json.JSONDecodeError:
+                    log.warning(f"Skipping invalid JSON in multi-line chunk processing: {raw_chunk_bytes.decode('utf-8', errors='ignore')[:100]}")
+                    continue
+                except Exception as e_inner:
+                    log.error(f"Error sending multi-line chunk to client WebSocket: {e_inner}")
+                    outer_loop_break = True
+                    break
+            except WebSocketDisconnect:
+                log.info("Client WebSocket disconnected while processing/sending Ollama chunks.")
+                outer_loop_break = True
+                break
+            except Exception as e:
+                log.error(f"Error processing/sending chunk to client WebSocket: {e}")
+                outer_loop_break = True
+                break
+        
+        if outer_loop_break:
+            log.info(f"Outer loop break called after {chunk_count} chunks.")
+
+        log.info(f"Finished streaming {chunk_count} chunks from Ollama.")
 
     except WebSocketDisconnect:
-        log.info("Client disconnected")
+        log.info("Client disconnected before or during initial payload processing.")
+    except aiohttp.ClientError as e:
+        log.error(f"aiohttp.ClientError communicating with Ollama: {e}")
+        if ws.client_state != WebSocketDisconnect:
+            try:
+                await ws.send_text(json.dumps({"error": f"Ollama connection error: {str(e)}"}))
+            except: pass
+    except asyncio.TimeoutError:
+        log.error("Asyncio TimeoutError, likely during Ollama request.")
+        if ws.client_state != WebSocketDisconnect:
+            try:
+                await ws.send_text(json.dumps({"error": "Request to Ollama timed out."}))
+            except: pass
     except Exception as e:
-        log.exception("💥 Stream error")
-        # try to inform client, then close
-        try:
-            await ws.send_text(json.dumps({"error": str(e)}))
-            await ws.close()
-        except:
-            pass
+        log.exception("💥 LLM Proxy Stream error")
+        if ws.client_state != WebSocketDisconnect:
+            try:
+                await ws.send_text(json.dumps({"error": f"LLM Proxy internal error: {str(e)}"}))
+            except: pass
+    finally:
+        log.info("Cleaning up LLM Proxy WebSocket resources.")
+        if ollama_response and hasattr(ollama_response, 'closed') and not ollama_response.closed:
+            ollama_response.close()
+            log.info("Closed Ollama response stream.")
+        if ollama_session and hasattr(ollama_session, 'closed') and not ollama_session.closed:
+            await ollama_session.close()
+        
+        if hasattr(ws, 'client_state') and ws.client_state != WebSocketDisconnect:
+            try:
+                await ws.close()
+                log.info("LLM Proxy WebSocket connection closed in finally.")
+            except Exception as e_ws_close:
+                log.error(f"Error closing LLM Proxy WebSocket in finally: {e_ws_close}")

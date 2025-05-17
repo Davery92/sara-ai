@@ -84,27 +84,35 @@ async def get_persona_config(user_id: str = None, auth_token: str = None) -> str
         return SYS_CORE
 
 async def enhance_prompt(payload: dict, auth_token: str = None) -> dict:
-    user_msg = payload.get("msg", "")
+    user_msg_text_for_memory = payload.get("msg", "") 
     room_id = payload.get("room_id", "")
     user_id = payload.get("user_id", "")
 
-    persona_content = await get_persona_config(user_id, auth_token)
-    memories = await get_memories(user_msg, room_id, auth_token) if user_msg and room_id else []
+    log.info(f"[DW_ENHANCE_PROMPT] Received payload 'msg': '{user_msg_text_for_memory}'")
+    log.info(f"[DW_ENHANCE_PROMPT] Received payload 'messages' (count: {len(payload.get('messages', []))}). Last message: {payload.get('messages', [])[-1] if payload.get('messages') else 'None'}")
 
-    system_prompt = persona_content
+    persona_content = await get_persona_config(user_id, auth_token)
+    memories = await get_memories(user_msg_text_for_memory, room_id, auth_token) if user_msg_text_for_memory and room_id else []
+
+    system_prompt_content = persona_content
     if memories:
         memory_text = "\n\n".join([f"- {m}" for m in memories])
-        system_prompt += f"\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
-
-    if "messages" in payload:
-        for msg in payload["messages"]:
-            if msg.get("role") == "system":
-                msg["content"] = system_prompt
-                break
-        else:
-            payload["messages"].insert(0, {"role": "system", "content": system_prompt})
-    else:
-        payload["system_prompt"] = system_prompt
+        system_prompt_content += f"\n\n{MEMORY_TEMPLATE.format(memories=memory_text)}"
+    
+    current_conversation_messages = payload.get("messages", [])
+    
+    final_messages_for_llm = [{"role": "system", "content": system_prompt_content}]
+    for msg in current_conversation_messages:
+        if msg.get("role") != "system": 
+            final_messages_for_llm.append(msg)
+            
+    payload["messages"] = final_messages_for_llm
+    
+    log.info(f"[DW_ENHANCE_PROMPT] Final messages for LLM (count: {len(final_messages_for_llm)}).")
+    if final_messages_for_llm:
+        log.info(f"[DW_ENHANCE_PROMPT] First message to LLM: {final_messages_for_llm[0]}")
+        if len(final_messages_for_llm) > 1:
+            log.info(f"[DW_ENHANCE_PROMPT] Last message to LLM: {final_messages_for_llm[-1]}")
 
     return payload
 

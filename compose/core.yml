@@ -257,7 +257,7 @@ services:
     environment:
       <<: *env
       ENV: prod
-      LLM_BASE_URL: "http://host.docker.internal:11434"
+      LLM_BASE_URL: "http://100.104.68.115:11434"
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       POSTGRES_USER: "${POSTGRES_USER}"
@@ -281,7 +281,7 @@ services:
     env_file: [ ../.env ]
     environment:
       <<: *env
-      OLLAMA_URL: "http://host.docker.internal:11434"
+      OLLAMA_URL: "http://100.104.68.115:11434"
     networks: [backend]
     depends_on:
       nats:     { condition: service_healthy }
@@ -299,6 +299,32 @@ services:
       temporal: { condition: service_healthy }
     networks: [backend]
 
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+      # If your frontend build runs migrations and needs DB access during build:
+      # args:
+      #   POSTGRES_URL: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}"
+    container_name: sara_frontend
+    restart: unless-stopped
+    ports: # Expose frontend directly to the host
+      - "3000:3000"
+    networks: [backend]
+    env_file:
+      - ../.env # For AUTH_SECRET if needed by Next.js server parts
+    environment:
+      NODE_ENV: production
+      # Client-side will make requests to http://localhost:8000 (or whatever host port gateway is mapped to)
+      NEXT_PUBLIC_BACKEND_API_URL: http://localhost:8000/v1
+      NEXT_PUBLIC_BACKEND_WS_URL: ws://localhost:8000/v1/stream
+      # Server-side calls from frontend container to gateway container
+      INTERNAL_BACKEND_API_URL: http://gateway:8000 # This remains the same for container-to-container
+      AUTH_SECRET: "${AUTH_SECRET}" # Ensure this is in your root .env if frontend NextAuth features are used
+    depends_on:
+      gateway: { condition: service_started }
+
+
 # ─────────────────────────────── Networks & Volumes ───────────────────────────────
 
 volumes:
@@ -313,4 +339,3 @@ networks:
   backend:
     name: backend
     driver: bridge
-

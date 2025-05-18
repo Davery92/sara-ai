@@ -1,4 +1,3 @@
-import { signIn } from '@/app/(auth)/auth';
 import { isDevelopmentEnvironment } from '@/lib/constants';
 import { getToken } from 'next-auth/jwt';
 import { NextResponse } from 'next/server';
@@ -17,5 +16,8 @@ export async function GET(request: Request) {
     return NextResponse.redirect(new URL('/', request.url));
   }
 
-  return signIn('guest', { redirect: true, redirectTo: redirectUrl });
+  // Redirect to login page (guest sign-in not supported)
+  return NextResponse.redirect(
+    new URL(`/login?callbackUrl=${encodeURIComponent(redirectUrl)}`, request.url)
+  );
 }

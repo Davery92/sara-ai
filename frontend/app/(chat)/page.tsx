@@ -5,12 +5,8 @@ import { Chat } from '@/components/chat';
 import { DEFAULT_CHAT_MODEL } from '@/lib/ai/models';
 import { generateUUID } from '@/lib/utils';
 import { ErrorUI } from '@/components/error-ui';
+import { getApiBaseUrl } from '@/lib/get-api-base-url';
 // import { headers } from 'next/headers'; // Not used currently
-
-// Helper function to get API base URL
-const getApiBaseUrl = () => {
-  return process.env.INTERNAL_API_URL || process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
-};
 
 export default async function Page() {
   console.log("RENDERING / (chat index) page");
@@ -23,13 +19,16 @@ export default async function Page() {
     redirect('/login'); // Removed await as redirect doesn't return a Promise
   }
   
-  const apiBaseUrl = getApiBaseUrl();
+  const serverApiBaseUrl = getApiBaseUrl('server');
+  console.log(`[CHAT INDEX PAGE] Attempting to create chat. API Base URL: ${serverApiBaseUrl}`);
   // const modelIdFromCookie = cookieStore.get('chat-model'); // Not used in create
   // const modelId = modelIdFromCookie?.value || DEFAULT_CHAT_MODEL; // Not used in create
   
   // Create the chat in the backend first
   try {
-    const response = await fetch(`${apiBaseUrl}/api/chats`, {
+    const createChatUrl = `${serverApiBaseUrl}/api/chats`;
+    console.log(`[CHAT INDEX PAGE] Calling POST ${createChatUrl}`);
+    const response = await fetch(createChatUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,

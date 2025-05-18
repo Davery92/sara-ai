@@ -12,6 +12,7 @@ from fastapi import FastAPI, Depends, Response
 from fastapi.middleware import Middleware
 from fastapi.middleware.cors import CORSMiddleware  # Import CORS middleware
 from contextlib import asynccontextmanager
+import logging  # Add logging
 
 from .auth import auth_middleware, verify
 from .routes.api import router as api_router
@@ -29,17 +30,47 @@ from .routes.memory import router as memory_router
 from .routes import api, auth, chat_queue, memory, search, messages, persona, artifacts, files, chats
 from .nats_client import GatewayNATS
 
-nats_client = GatewayNATS("nats://nats:4222")
+log = logging.getLogger("gateway.main")  # Logger for this module
+
+nats_client = GatewayNATS(os.getenv("NATS_URL", "nats://nats:4222"))  # Use env var for consistency
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    log.info("Application startup...")
     await init_models()
-    yield
-    await nats_client.nc.drain()
+    log.info("Database models initialized.")
 
-    # Shutdown (if needed)
+    try:
+        log.info(f"Attempting to connect to NATS server at {nats_client.url}...")
+        await nats_client.start(max_retries=10, delay=2.0)
+        log.info("Successfully connected to NATS and started client.")
+    except Exception as e:
+        log.error(f"Failed to connect to NATS during startup: {e}")
+        # Continue without raising to allow app to start
+
+    yield  # Application runs here
+
+    # Shutdown
+    log.info("Application shutdown...")
+    if nats_client.nc and getattr(nats_client.nc, 'is_connected', False):
+        try:
+            log.info("Draining NATS connection...")
+            await nats_client.nc.drain()
+            log.info("NATS connection drained.")
+        except Exception as e:
+            log.error(f"Error during NATS drain: {e}")
+    elif nats_client.nc and not getattr(nats_client.nc, 'is_closed', True):
+        try:
+            log.info("NATS client was not connected, attempting to close.")
+            await nats_client.nc.close()
+            log.info("NATS connection closed.")
+        except Exception as e:
+            log.error(f"Error closing NATS connection during shutdown: {e}")
+    else:
+        log.info("NATS client was not connected or already closed. Skipping drain/close.")
+    log.info("Application shutdown complete.")
 
 app = FastAPI(
     redirect_slashes=False,

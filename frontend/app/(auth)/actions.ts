@@ -4,9 +4,7 @@ import { z } from 'zod';
 
 import { createUser, getUser } from '@/lib/db/queries';
 
-import { signIn } from './auth';
-
-const authFormSchema = z.object({
+export const authFormSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
 });
@@ -25,12 +23,16 @@ export const login = async (
       password: formData.get('password'),
     });
 
-    await signIn('credentials', {
-      email: validatedData.email,
-      password: validatedData.password,
-      redirect: false,
+    const response = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: validatedData.email, password: validatedData.password }),
     });
-
+    if (!response.ok) {
+      const errorData = await response.json().catch(() => ({ detail: 'Login failed' }));
+      console.error('Login action failed:', response.status, errorData);
+      return { status: 'failed' };
+    }
     return { status: 'success' };
   } catch (error) {
     if (error instanceof z.ZodError) {
@@ -67,12 +69,28 @@ export const register = async (
       return { status: 'user_exists' } as RegisterActionState;
     }
     await createUser(validatedData.email, validatedData.password);
-    await signIn('credentials', {
-      email: validatedData.email,
-      password: validatedData.password,
-      redirect: false,
+    const signupResponse = await fetch('/api/auth/signup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: validatedData.email, password: validatedData.password }),
     });
-
+    if (!signupResponse.ok) {
+      const errorData = await signupResponse.json().catch(() => ({ detail: 'Registration failed' }));
+      if (signupResponse.status === 409) {
+        return { status: 'user_exists' };
+      }
+      console.error('Signup action failed:', signupResponse.status, errorData);
+      return { status: 'failed' };
+    }
+    const loginResponse = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: validatedData.email, password: validatedData.password }),
+    });
+    if (!loginResponse.ok) {
+      console.error('Post-signup login failed');
+      return { status: 'failed' };
+    }
     return { status: 'success' };
   } catch (error) {
     if (error instanceof z.ZodError) {

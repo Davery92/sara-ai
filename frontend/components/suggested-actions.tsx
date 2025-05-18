@@ -11,15 +11,17 @@ type CustomChatRequestOptions = { [key: string]: any };
 
 interface SuggestedActionsProps {
   append: (
-    message: UIMessage | Omit<UIMessage, 'id' | 'createdAt'>, 
+    message: UIMessage | Omit<UIMessage, 'id' | 'createdAt'>,
     options?: CustomChatRequestOptions
-  ) => Promise<string | null | undefined>; // Updated type
+  ) => Promise<string | null | undefined>;
   chatId: string;
+  selectedVisibilityType: VisibilityType;
 }
 
 function PureSuggestedActions({
   chatId,
   append,
+  selectedVisibilityType,
 }: SuggestedActionsProps) {
   const suggestedActions = [
     {
@@ -85,7 +87,8 @@ export const SuggestedActions = memo(
   PureSuggestedActions,
   (prevProps: SuggestedActionsProps, nextProps: SuggestedActionsProps) => {
     if (prevProps.chatId !== nextProps.chatId) return false;
-    if (prevProps.append !== nextProps.append) return false; 
+    if (prevProps.append !== nextProps.append) return false;
+    if (prevProps.selectedVisibilityType !== nextProps.selectedVisibilityType) return false;
     return true;
   },
 );

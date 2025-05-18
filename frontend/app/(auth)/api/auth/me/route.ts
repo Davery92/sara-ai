@@ -1,20 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getApiBaseUrl } from '@/lib/get-api-base-url';
 
 /**
  * Handle user profile requests and forward them to the backend API
  */
-
-// Get base API URL from environment
-const getApiBaseUrl = () => {
-  const baseUrl = process.env.INTERNAL_API_BASE_URL || 'http://localhost:8000';
-  
-  // Ensure we don't have a trailing slash that could cause double slashes
-  if (baseUrl.endsWith('/')) {
-    return baseUrl.slice(0, -1);
-  }
-  
-  return baseUrl;
-};
 
 export async function GET(request: NextRequest) {
   // Log request details
@@ -32,7 +21,7 @@ export async function GET(request: NextRequest) {
         console.log("[SERVER] Using token from cookie for auth");
         
         // Forward the request to the backend with the Authorization header from cookie
-        const response = await fetch(`${getApiBaseUrl()}/auth/me`, {
+        const response = await fetch(`${getApiBaseUrl('server')}/auth/me`, {
           method: 'GET',
           headers: {
             'Authorization': cookieAuth,
@@ -60,7 +49,7 @@ export async function GET(request: NextRequest) {
     
     // Forward the request to our backend with the Authorization header
     console.log("[SERVER] Using Authorization header for auth");
-    const backendApiUrl = `${getApiBaseUrl()}/auth/me`;
+    const backendApiUrl = `${getApiBaseUrl('server')}/auth/me`;
     console.log("[SERVER] Calling backend at:", backendApiUrl);
     
     const response = await fetch(backendApiUrl, {

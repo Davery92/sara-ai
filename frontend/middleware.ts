@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 // import { getToken } from 'next-auth/jwt';
 // import { guestRegex, isDevelopmentEnvironment } from './lib/constants';
 
-const PUBLIC_API_PREFIXES = ['/api/auth/login', '/api/auth/signup', '/api/auth/refresh'];
+const PUBLIC_API_PREFIXES = ['/api/auth/login', '/api/auth/signup', '/api/auth/refresh', '/api/auth/me', '/api/auth/logout'];
 const PUBLIC_PAGES = ['/login', '/register'];
 
 export async function middleware(request: NextRequest) {

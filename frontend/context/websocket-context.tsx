@@ -36,7 +36,13 @@ interface WebSocketMessageEvent extends CustomEvent {
 }
 
 export function WebSocketProvider({ children }: { children: React.ReactNode }) {
-  const { accessToken, isAuthenticated } = useAuth();
+  const { isAuthenticated } = useAuth();
+  // Parse accessToken from HttpOnly cookie
+  const accessToken = (() => {
+    if (typeof document === 'undefined') return null;
+    const match = document.cookie.match(/(^|; )accessToken=([^;]*)/);
+    return match ? decodeURIComponent(match[2]) : null;
+  })();
   const [wsStatus, setWsStatus] = useState<WebSocketStatus>('idle');
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
   const webSocketRef = useRef<WebSocket | null>(null);

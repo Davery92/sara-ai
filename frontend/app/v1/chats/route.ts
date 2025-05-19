@@ -1,41 +1,104 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { generateUUID } from '@/lib/utils';
+import { getApiBaseUrl } from '@/lib/get-api-base-url';
 
 /**
- * API route that returns a list of user chats
- * This is a temporary solution until the backend API is ready
+ * Proxy route for chats via the backend gateway
  */
 
+// GET /v1/chats
 export async function GET(request: NextRequest) {
-  // Get the authentication token from the request headers
-  const auth = request.headers.get('authorization');
-  
-  // If no auth token, return an empty list
-  if (!auth) {
-    return NextResponse.json({
-      chats: []
-    });
+  const accessToken = request.cookies.get('accessToken')?.value;
+
+  if (!accessToken) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
-  
-  // Return a list of mock chats for development
-  return NextResponse.json({
-    chats: [
-      {
-        id: generateUUID(),
-        title: 'Sample Chat 1',
-        createdAt: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-        updatedAt: new Date().toISOString(),
-        messageCount: 8,
-        visibility: 'private'
+
+  const serverApiBaseUrl = getApiBaseUrl('server');
+  const gatewayChatsUrl = `${serverApiBaseUrl}/api/chats`;
+
+  console.log(`[FRONTEND /v1/chats] Proxying GET request to: ${gatewayChatsUrl}`);
+
+  try {
+    const response = await fetch(gatewayChatsUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
       },
-      {
-        id: generateUUID(),
-        title: 'Programming Help',
-        createdAt: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
-        updatedAt: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
-        messageCount: 12,
-        visibility: 'private'
-      }
-    ]
-  });
+      cache: 'no-store',
+    });
+
+    if (!response.ok) {
+      const errorBody = await response.text();
+      console.error(`[FRONTEND /v1/chats] Error from gateway ${response.status}:`, errorBody);
+      return NextResponse.json(
+        { error: 'Failed to fetch chats from backend', details: errorBody },
+        { status: response.status }
+      );
+    }
+
+    const chatsData = await response.json();
+    return NextResponse.json(chatsData);
+  } catch (error: any) {
+    console.error(`[FRONTEND /v1/chats] Error proxying GET request:`, error);
+    let causeMessage = 'Unknown cause';
+    if (error.cause && typeof error.cause === 'object' && 'code' in error.cause) {
+      causeMessage = `Network error: ${error.cause.code}`;
+    } else if (error.message) {
+      causeMessage = error.message;
+    }
+    return NextResponse.json(
+      { error: 'Failed to proxy chat list request', details: causeMessage },
+      { status: 500 }
+    );
+  }
+}
+
+// POST /v1/chats
+export async function POST(request: NextRequest) {
+  const accessToken = request.cookies.get('accessToken')?.value;
+
+  if (!accessToken) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const serverApiBaseUrl = getApiBaseUrl('server');
+  const gatewayCreateChatUrl = `${serverApiBaseUrl}/api/chats`;
+
+  console.log(`[FRONTEND /v1/chats] Proxying POST request to: ${gatewayCreateChatUrl}`);
+
+  try {
+    const requestBody = await request.json();
+    const response = await fetch(gatewayCreateChatUrl, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(requestBody),
+      cache: 'no-store',
+    });
+
+    const responseData = await response.json();
+    if (!response.ok) {
+      console.error(`[FRONTEND /v1/chats] Error from gateway POST ${response.status}:`, responseData);
+      return NextResponse.json(
+        { error: 'Failed to create chat via backend', details: responseData.detail || responseData },
+        { status: response.status }
+      );
+    }
+    return NextResponse.json(responseData, { status: response.status });
+  } catch (error: any) {
+    console.error(`[FRONTEND /v1/chats] Error proxying POST request:`, error);
+    let causeMessage = 'Unknown cause';
+    if (error.cause && typeof error.cause === 'object' && 'code' in error.cause) {
+      causeMessage = `Network error: ${error.cause.code}`;
+    } else if (error.message) {
+      causeMessage = error.message;
+    }
+    return NextResponse.json(
+      { error: 'Failed to proxy chat creation request', details: causeMessage },
+      { status: 500 }
+    );
+  }
 } 

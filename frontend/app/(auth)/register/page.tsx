@@ -54,17 +54,17 @@ export default function Page() {
     const currentPassword = formData.get('password') as string;
     setEmail(currentEmail);
 
-    if (!currentEmail || !currentPassword) { // Basic validation
+    if (!currentEmail || !currentPassword) {
       setFormState({ status: 'invalid_data', message: 'Email and password are required.' });
       return;
     }
-    if (currentPassword.length < 6) { // Example: Password length validation
-        setFormState({ status: 'invalid_data', message: 'Password must be at least 6 characters long.'});
-        return;
+    if (currentPassword.length < 6) {
+      setFormState({ status: 'invalid_data', message: 'Password must be at least 6 characters long.' });
+      return;
     }
 
     try {
-      const response = await fetch('/api/auth/signup', { // Assuming gateway is proxied or this is direct path
+      const response = await fetch('/api/auth/signup', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -72,18 +72,28 @@ export default function Page() {
         body: JSON.stringify({ email: currentEmail, password: currentPassword }),
       });
 
+      // If we get a redirect, let the browser handle it
+      if (response.redirected) {
+        window.location.href = response.url;
+        return;
+      }
+
       const data = await response.json();
 
       if (response.ok) {
-        console.log('Signup successful:', data);
-        await auth.login(data.access_token, data.refresh_token);
-        setFormState({ status: 'success' });
+        if (data.access_token && data.refresh_token) {
+          await auth.login(data.access_token, data.refresh_token);
+          setFormState({ status: 'success', message: 'Account created successfully! Redirecting...' });
+          router.push('/');
+        } else {
+          setFormState({ status: 'error', message: 'Invalid response from server' });
+        }
       } else {
-        if (response.status === 409) { // Conflict - user exists
+        if (response.status === 409) {
           setFormState({ status: 'user_exists', message: data.detail || 'User already exists' });
-        } else if (response.status === 422) { // Unprocessable Entity - validation error
-            setFormState({ status: 'invalid_data', message: data.detail?.[0]?.msg || data.detail || 'Invalid data' });
-        }else {
+        } else if (response.status === 422) {
+          setFormState({ status: 'invalid_data', message: data.detail?.[0]?.msg || data.detail || 'Invalid data' });
+        } else {
           setFormState({ status: 'failed', message: data.detail || 'Signup failed' });
         }
       }

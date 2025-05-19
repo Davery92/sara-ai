@@ -25,10 +25,14 @@ export default function Page() {
   const [formState, setFormState] = useState<FormState>({ status: 'idle' });
 
   useEffect(() => {
+    if (auth.isAuthenticated && !auth.isLoading) {
+      router.replace('/'); // or '/chat' if that's your main page
+    }
+  }, [auth.isAuthenticated, auth.isLoading, router]);
+
+  useEffect(() => {
     if (formState.status === 'success') {
-      toast({ type: 'success', description: 'Login successful!' });
-      setIsSuccessful(true);
-      router.push('/');
+      toast({ type: 'success', description: formState.message || 'Login successful!' });
     } else if (formState.status === 'invalid_credentials') {
       toast({ type: 'error', description: formState.message || 'Invalid credentials!' });
     } else if (formState.status === 'failed') {
@@ -36,7 +40,7 @@ export default function Page() {
     } else if (formState.status === 'error') {
       toast({ type: 'error', description: formState.message || 'An unexpected error occurred.' });
     }
-  }, [formState, router]);
+  }, [formState]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -55,28 +59,29 @@ export default function Page() {
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: currentEmail, password: currentPassword }),
       });
-
+      // Read JSON once
       const data = await response.json();
-
-      if (response.ok) {
-        console.log('Login successful:', data);
-        await auth.login(data.access_token, data.refresh_token);
-        setFormState({ status: 'success' });
-      } else {
-        if (response.status === 401) {
-          setFormState({ status: 'invalid_credentials', message: data.detail || 'Invalid credentials' });
-        } else {
-          setFormState({ status: 'failed', message: data.detail || 'Login failed' });
-        }
+      if (response.ok && data.success) {
+        // Login successful: update auth context then navigate
+        await auth.login();
+        router.replace('/');
+        return;
       }
+      // Handle errors
+      if (!response.ok) {
+        const msg = data.detail || (response.status === 401 ? 'Invalid credentials' : 'Login failed');
+        setFormState({ status: response.status === 401 ? 'invalid_credentials' : 'failed', message: msg });
+        return;
+      }
+      // Fallback for unexpected
+      setFormState({ status: 'error', message: 'An unexpected error occurred during login.' });
     } catch (error) {
       console.error('Login error:', error);
-      setFormState({ status: 'error', message: 'An unexpected error occurred.' });
+      setFormState({ status: 'error', message: 'An unexpected error occurred during login.' });
     }
   };
 

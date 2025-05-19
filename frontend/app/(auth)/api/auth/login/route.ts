@@ -1,29 +1,22 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getApiBaseUrl } from '@/lib/get-api-base-url';
 
 /**
  * Handle login requests and forward them to the backend API
  */
-
-// Get base API URL from environment
-const getApiBaseUrl = () => {
-  const baseUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8000';
-  
-  // Ensure we don't have a trailing slash that could cause double slashes
-  if (baseUrl.endsWith('/')) {
-    return baseUrl.slice(0, -1);
-  }
-  
-  return baseUrl;
-};
 
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json();
     const { email, password } = body;
     
-    // Forward the login request to our backend
-    // Backend expects username, not email
-    const response = await fetch(`${getApiBaseUrl()}/auth/login`, {
+    // Determine backend URL using shared utility
+    const serverApiBaseUrl = getApiBaseUrl('server');
+    const backendLoginUrl = `${serverApiBaseUrl}/auth/login`;
+    console.log(`[API/LOGIN] Calling backend at: ${backendLoginUrl}`);
+    
+    // Forward the login request to our backend (expects username, not email)
+    const backendResponse = await fetch(backendLoginUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -31,47 +24,53 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify({ username: email, password }),
     });
     
-    const data = await response.json();
+    const responseData = await backendResponse.json();
     
-    if (!response.ok) {
-      // Return the error from the backend with the appropriate status code
+    if (!backendResponse.ok) {
+      console.error(`[API/LOGIN] Backend login error (${backendResponse.status}):`, responseData.detail || backendResponse.statusText);
       return NextResponse.json(
-        { error: data.detail || 'Authentication failed' },
-        { status: response.status }
+        { error: responseData.detail || 'Authentication failed' },
+        { status: backendResponse.status }
       );
     }
     
-    // Create a new response with tokens
-    const responseWithCookies = NextResponse.json(data);
+    // Return JSON response for successful login (client will handle navigation)
+    const response = NextResponse.json({ success: true });
+
+    // Set cookies with consistent settings
+    if (responseData.access_token) {
+      console.log('[API/LOGIN] Setting accessToken cookie');
+      response.cookies.set({
+        name: 'accessToken',
+        value: responseData.access_token,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24 * 7, // 7 days
+        path: '/',
+      });
+    }
     
-    // Set the access token as an HttpOnly cookie
-    responseWithCookies.cookies.set({
-      name: 'accessToken',
-      value: data.access_token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24 * 7, // 7 days (matching the extended token lifetime)
-      path: '/'
-    });
-    
-    // Also set the refresh token as an HttpOnly cookie
-    // This is safer than storing it in localStorage
-    responseWithCookies.cookies.set({
-      name: 'refreshToken',
-      value: data.refresh_token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-      path: '/'
-    });
-    
-    return responseWithCookies;
-  } catch (error) {
-    console.error('Login error:', error);
+    if (responseData.refresh_token) {
+      console.log('[API/LOGIN] Setting refreshToken cookie');
+      response.cookies.set({
+        name: 'refreshToken',
+        value: responseData.refresh_token,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        maxAge: 60 * 60 * 24 * 30, // 30 days
+        path: '/',
+      });
+    }
+
+    console.log('[API/LOGIN] Returning redirect response with cookies');
+    return response;
+  } catch (error: any) {
+    console.error('[API/LOGIN] Error in login route handler:', error);
+    let causeMessage = error.cause?.code || error.message || 'Unknown error';
     return NextResponse.json(
-      { error: 'Authentication failed due to a server error' },
+      { error: 'Login proxy failed', details: causeMessage },
       { status: 500 }
     );
   }

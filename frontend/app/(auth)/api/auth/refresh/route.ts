@@ -1,88 +1,96 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { getApiBaseUrl } from '@/lib/get-api-base-url'; // Assuming this is the correct path
 
 /**
  * Handle token refresh requests and forward them to the backend API
  */
 
-// Get base API URL from environment
-const getApiBaseUrl = () => {
-  const baseUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || 'http://localhost:8000';
-  
-  // Ensure we don't have a trailing slash that could cause double slashes
-  if (baseUrl.endsWith('/')) {
-    return baseUrl.slice(0, -1);
-  }
-  
-  return baseUrl;
-};
-
 export async function POST(request: NextRequest) {
   try {
-    // Try to get refresh token from the request body
     let refresh_token;
     
-    try {
-      const body = await request.json();
-      refresh_token = body.refresh_token;
-    } catch (e) {
-      // If parsing request body fails, try getting token from cookie
-      refresh_token = request.cookies.get('refreshToken')?.value;
+    // Try to get refresh token from HttpOnly cookie first (more secure)
+    refresh_token = request.cookies.get('refreshToken')?.value;
+    console.log(`[API/REFRESH] refreshToken from cookie: ${refresh_token ? 'Found' : 'Not Found'}`);
+
+    if (!refresh_token) {
+      // Fallback: try getting from request body (less common if using HttpOnly cookies properly)
+      try {
+        const body = await request.json();
+        refresh_token = body.refresh_token;
+        console.log(`[API/REFRESH] refreshToken from body: ${refresh_token ? 'Found' : 'Not Found'}`);
+      } catch (e) {
+        console.log('[API/REFRESH] No JSON body or refresh_token in body.');
+      }
     }
     
     if (!refresh_token) {
+      console.log('[API/REFRESH] Refresh token is required, not found in cookie or body.');
       return NextResponse.json({ error: 'Refresh token is required' }, { status: 400 });
     }
     
-    // Forward the refresh request to our backend
-    const response = await fetch(`${getApiBaseUrl()}/auth/refresh`, {
+    const serverApiBaseUrl = getApiBaseUrl('server'); // Use for backend call
+    const backendRefreshUrl = `${serverApiBaseUrl}/auth/refresh`;
+    console.log(`[API/REFRESH] Calling backend at: ${backendRefreshUrl}`);
+
+    const backendResponse = await fetch(backendRefreshUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({ refresh_token }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh_token }), // Backend expects refresh_token in body
     });
     
-    const data = await response.json();
+    const data = await backendResponse.json();
     
-    if (!response.ok) {
-      // Return the error from the backend with the appropriate status code
+    if (!backendResponse.ok) {
+      console.error(`[API/REFRESH] Backend refresh error (${backendResponse.status}):`, data.detail || data);
       return NextResponse.json(
-        { error: data.detail || 'Token refresh failed' },
-        { status: response.status }
+        { error: data.detail || 'Token refresh failed at backend' },
+        { status: backendResponse.status }
       );
     }
     
-    // Create a new response with tokens
-    const responseWithCookies = NextResponse.json(data);
+    // Create a new response to set cookies
+    const responseWithCookies = NextResponse.json(data); // data should contain new access_token
     
-    // Set the access token as an HttpOnly cookie
-    responseWithCookies.cookies.set({
-      name: 'accessToken',
-      value: data.access_token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24 * 7, // 7 days (matching the extended token lifetime)
-      path: '/'
-    });
+    const requestProtocol = request.headers.get('x-forwarded-proto') || request.nextUrl.protocol.replace(':', '');
+    const isConnectionSecure = requestProtocol === 'https';
+    const cookieSecureFlag = isConnectionSecure; // Simplified for local dev
+    console.log(`[API/REFRESH] Cookie Secure Flag will be: ${cookieSecureFlag}`);
+
+    if (data.access_token) {
+      responseWithCookies.cookies.set({
+        name: 'accessToken',
+        value: data.access_token,
+        httpOnly: true,
+        secure: cookieSecureFlag,
+        sameSite: 'lax',
+        maxAge: 60 * 60 * 24 * 7, 
+        path: '/'
+      });
+    }
+    // Note: The backend refresh might also return a new refresh_token. If so, update it.
+    if (data.refresh_token) {
+         responseWithCookies.cookies.set({
+            name: 'refreshToken',
+            value: data.refresh_token,
+            httpOnly: true,
+            secure: cookieSecureFlag,
+            sameSite: 'strict',
+            maxAge: 60 * 60 * 24 * 30,
+            path: '/'
+        });
+    }
     
-    // Also set the refresh token as an HttpOnly cookie
-    responseWithCookies.cookies.set({
-      name: 'refreshToken',
-      value: data.refresh_token,
-      httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
-      sameSite: 'strict',
-      maxAge: 60 * 60 * 24 * 30, // 30 days
-      path: '/'
-    });
-    
+    console.log('[API/REFRESH] Token refresh successful, returning new tokens (accessToken in JSON, both as cookies).');
     return responseWithCookies;
-  } catch (error) {
-    console.error('Token refresh error:', error);
+
+  } catch (error: any) { // Catch any error, including JSON parsing or network issues
+    console.error('[API/REFRESH] Error in refresh route handler:', error);
+    let causeMessage = error.message || 'Unknown error during refresh';
+    if (error.cause) causeMessage = `${causeMessage} (Cause: ${error.cause})`;
     return NextResponse.json(
-      { error: 'Token refresh failed due to a server error' },
-      { status: 500 }
+      { error: 'Token refresh proxy failed', details: causeMessage },
+      { status: 500 } // Return 500 for internal errors in this route
     );
   }
 } 

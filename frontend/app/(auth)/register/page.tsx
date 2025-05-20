@@ -30,10 +30,20 @@ export default function Page() {
   // const { update: updateSession } = useSession();
 
   useEffect(() => {
+    if (auth.isAuthenticated && !auth.isLoading) {
+      console.log('[RegisterPage] User is authenticated via AuthContext, redirecting to /');
+      const searchParams = new URLSearchParams(window.location.search);
+      const redirectUrl = searchParams.get('redirectUrl');
+      router.replace(redirectUrl || '/'); // Default to home page
+    }
+  }, [auth.isAuthenticated, auth.isLoading, router]);
+
+  useEffect(() => {
     if (formState.status === 'success') {
-      toast({ type: 'success', description: 'Account created successfully! You are now logged in.' });
+      toast({ type: 'success', description: formState.message || 'Account created successfully! Redirecting...' });
       setIsSuccessful(true);
-      router.push('/');
+      // After signup, ensure context is updated
+      auth.login();
     } else if (formState.status === 'user_exists') {
       toast({ type: 'error', description: formState.message || 'Account already exists!' });
     } else if (formState.status === 'invalid_data') {
@@ -43,7 +53,7 @@ export default function Page() {
     } else if (formState.status === 'error') {
       toast({ type: 'error', description: formState.message || 'An unexpected error occurred.' });
     }
-  }, [formState, router]); // Update dependencies
+  }, [formState, auth]);
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -52,7 +62,7 @@ export default function Page() {
     const formData = new FormData(event.currentTarget);
     const currentEmail = formData.get('email') as string;
     const currentPassword = formData.get('password') as string;
-    setEmail(currentEmail);
+    // setEmail(currentEmail); // Not strictly needed to set state here if form data is used directly
 
     if (!currentEmail || !currentPassword) {
       setFormState({ status: 'invalid_data', message: 'Email and password are required.' });
@@ -66,40 +76,28 @@ export default function Page() {
     try {
       const response = await fetch('/api/auth/signup', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
+        credentials: 'include', // Important for any cookies it might set
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: currentEmail, password: currentPassword }),
       });
-
-      // If we get a redirect, let the browser handle it
-      if (response.redirected) {
-        window.location.href = response.url;
-        return;
-      }
-
-      const data = await response.json();
-
-      if (response.ok) {
-        if (data.access_token && data.refresh_token) {
-          await auth.login(data.access_token, data.refresh_token);
-          setFormState({ status: 'success', message: 'Account created successfully! Redirecting...' });
-          router.push('/');
-        } else {
-          setFormState({ status: 'error', message: 'Invalid response from server' });
-        }
+      
+      const data = await response.json(); // API route returns JSON
+      
+      if (response.ok && data.success) {
+        setFormState({ status: 'success', message: 'Account created successfully! Redirecting...' });
+        // This is the crucial part: tell AuthContext that login succeeded after signup
+        // AuthContext will fetch user data using the new cookies
+        await auth.login();
+        // Redirection will be handled by the useEffect watching auth.isAuthenticated
       } else {
-        if (response.status === 409) {
-          setFormState({ status: 'user_exists', message: data.detail || 'User already exists' });
-        } else if (response.status === 422) {
-          setFormState({ status: 'invalid_data', message: data.detail?.[0]?.msg || data.detail || 'Invalid data' });
-        } else {
-          setFormState({ status: 'failed', message: data.detail || 'Signup failed' });
-        }
+        // Handle different error cases
+        const msg = data.error || (response.status === 409 ? 'User already exists' : 'Signup failed');
+        const status = response.status === 409 ? 'user_exists' : response.status === 422 ? 'invalid_data' : 'failed';
+        setFormState({ status, message: msg });
       }
     } catch (error) {
-      console.error('Signup error:', error);
-      setFormState({ status: 'error', message: 'An unexpected error occurred.' });
+      console.error('Signup page handleSubmit error:', error);
+      setFormState({ status: 'error', message: 'An unexpected error occurred during signup.' });
     }
   };
 

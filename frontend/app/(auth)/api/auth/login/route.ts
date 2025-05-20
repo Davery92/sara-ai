@@ -27,24 +27,39 @@ export async function POST(request: NextRequest) {
     const responseData = await backendResponse.json();
     
     if (!backendResponse.ok) {
-      console.error(`[API/LOGIN] Backend login error (${backendResponse.status}):`, responseData.detail || backendResponse.statusText);
+      console.error(`[API/LOGIN] Backend login error (${backendResponse.status}):`, responseData.detail || responseData);
       return NextResponse.json(
-        { error: responseData.detail || 'Authentication failed' },
+        { success: false, error: responseData.detail || 'Authentication failed' },
         { status: backendResponse.status }
       );
     }
     
     // Return JSON response for successful login (client will handle navigation)
-    const response = NextResponse.json({ success: true });
+    const response = NextResponse.json({ 
+      success: true, 
+    });
+
+    // Determine if the connection is secure (HTTPS)
+    // The `x-forwarded-proto` header is often set by reverse proxies (like Traefik, Nginx)
+    // For direct connections, request.nextUrl.protocol is reliable.
+    const requestProtocol = request.headers.get('x-forwarded-proto') || request.nextUrl.protocol.replace(':', '');
+    const isConnectionSecure = requestProtocol === 'https';
+    
+    // Cookies should be secure ONLY if the connection is HTTPS.
+    // For local development over HTTP, secure MUST be false.
+    // We ignore NODE_ENV here for simplicity and rely purely on the connection protocol.
+    const cookieSecureFlag = isConnectionSecure;
+
+    console.log(`[API/LOGIN/SIGNUP] Cookie Secure Flag will be: ${cookieSecureFlag} (Protocol: ${requestProtocol}, NODE_ENV: ${process.env.NODE_ENV})`);
 
     // Set cookies with consistent settings
     if (responseData.access_token) {
-      console.log('[API/LOGIN] Setting accessToken cookie');
+      console.log('[API/LOGIN/SIGNUP] Setting accessToken cookie');
       response.cookies.set({
         name: 'accessToken',
         value: responseData.access_token,
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecureFlag,
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 7, // 7 days
         path: '/',
@@ -52,25 +67,25 @@ export async function POST(request: NextRequest) {
     }
     
     if (responseData.refresh_token) {
-      console.log('[API/LOGIN] Setting refreshToken cookie');
+      console.log('[API/LOGIN/SIGNUP] Setting refreshToken cookie');
       response.cookies.set({
         name: 'refreshToken',
         value: responseData.refresh_token,
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecureFlag,
         sameSite: 'strict',
         maxAge: 60 * 60 * 24 * 30, // 30 days
         path: '/',
       });
     }
 
-    console.log('[API/LOGIN] Returning redirect response with cookies');
+    console.log('[API/LOGIN/SIGNUP] Returning JSON response with cookies set.');
     return response;
   } catch (error: any) {
     console.error('[API/LOGIN] Error in login route handler:', error);
     let causeMessage = error.cause?.code || error.message || 'Unknown error';
     return NextResponse.json(
-      { error: 'Login proxy failed', details: causeMessage },
+      { success: false, error: 'Login proxy failed', details: causeMessage },
       { status: 500 }
     );
   }

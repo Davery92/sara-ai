@@ -26,10 +26,9 @@ export async function POST(request: NextRequest) {
     const responseData = await backendResponse.json();
     
     if (!backendResponse.ok) {
-      console.error(`[API/SIGNUP] Backend signup error (${backendResponse.status}):`, responseData.detail || backendResponse.statusText);
-      // Return the error from the backend with the appropriate status code
+      console.error(`[API/SIGNUP] Backend signup error (${backendResponse.status}):`, responseData.detail || responseData);
       return NextResponse.json(
-        { error: responseData.detail || 'Registration failed' },
+        { success: false, error: responseData.detail || 'Registration failed' },
         { status: backendResponse.status }
       );
     }
@@ -37,13 +36,26 @@ export async function POST(request: NextRequest) {
     // If signup is successful, set cookies and return success
     const response = NextResponse.json({ success: true });
 
+    // Determine if the connection is secure (HTTPS)
+    // The `x-forwarded-proto` header is often set by reverse proxies (like Traefik, Nginx)
+    // For direct connections, request.nextUrl.protocol is reliable.
+    const requestProtocol = request.headers.get('x-forwarded-proto') || request.nextUrl.protocol.replace(':', '');
+    const isConnectionSecure = requestProtocol === 'https';
+    
+    // Cookies should be secure ONLY if the connection is HTTPS.
+    // For local development over HTTP, secure MUST be false.
+    // We ignore NODE_ENV here for simplicity and rely purely on the connection protocol.
+    const cookieSecureFlag = isConnectionSecure; 
+
+    console.log(`[API/LOGIN/SIGNUP] Cookie Secure Flag will be: ${cookieSecureFlag} (Protocol: ${requestProtocol}, NODE_ENV: ${process.env.NODE_ENV})`);
+
     if (responseData.access_token) {
-      console.log('[API/SIGNUP] Setting accessToken cookie');
+      console.log('[API/LOGIN/SIGNUP] Setting accessToken cookie after signup');
       response.cookies.set({
         name: 'accessToken',
         value: responseData.access_token,
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecureFlag,
         sameSite: 'lax',
         maxAge: 60 * 60 * 24 * 7,
         path: '/',
@@ -51,26 +63,26 @@ export async function POST(request: NextRequest) {
     }
     
     if (responseData.refresh_token) {
-      console.log('[API/SIGNUP] Setting refreshToken cookie');
+      console.log('[API/LOGIN/SIGNUP] Setting refreshToken cookie after signup');
       response.cookies.set({
         name: 'refreshToken',
         value: responseData.refresh_token,
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
+        secure: cookieSecureFlag,
         sameSite: 'strict',
         maxAge: 60 * 60 * 24 * 30,
         path: '/',
       });
     }
     
-    console.log('[API/SIGNUP] Returning response with cookies.');
+    console.log('[API/LOGIN/SIGNUP] Returning JSON response with cookies set.');
     return response;
 
   } catch (error: any) {
     console.error('[API/SIGNUP] Error in signup route handler:', error);
     let causeMessage = error.cause?.code || error.message || 'Unknown error';
     return NextResponse.json(
-      { error: 'Signup proxy failed', details: causeMessage },
+      { success: false, error: 'Signup proxy failed', details: causeMessage },
       { status: 500 }
     );
   }

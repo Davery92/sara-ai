@@ -26,7 +26,10 @@ export default function Page() {
 
   useEffect(() => {
     if (auth.isAuthenticated && !auth.isLoading) {
-      router.replace('/'); // or '/chat' if that's your main page
+      console.log('[LoginPage] User is authenticated via AuthContext, redirecting to /');
+      const searchParams = new URLSearchParams(window.location.search);
+      const redirectUrl = searchParams.get('redirectUrl');
+      router.replace(redirectUrl || '/'); // Default to home page
     }
   }, [auth.isAuthenticated, auth.isLoading, router]);
 
@@ -49,7 +52,7 @@ export default function Page() {
     const formData = new FormData(event.currentTarget);
     const currentEmail = formData.get('email') as string;
     const currentPassword = formData.get('password') as string;
-    setEmail(currentEmail);
+    // setEmail(currentEmail); // Not strictly needed to set state here if form data is used directly
 
     if (!currentEmail || !currentPassword) {
       setFormState({ status: 'failed', message: 'Email and password are required.' });
@@ -59,28 +62,26 @@ export default function Page() {
     try {
       const response = await fetch('/api/auth/login', {
         method: 'POST',
-        credentials: 'include',
+        credentials: 'include', // Important for any cookies it might try to send (though not primary here)
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: currentEmail, password: currentPassword }),
       });
-      // Read JSON once
-      const data = await response.json();
+      
+      const data = await response.json(); // API route now returns JSON
+
       if (response.ok && data.success) {
-        // Login successful: update auth context then navigate
-        await auth.login();
-        router.replace('/');
-        return;
+        setFormState({ status: 'success', message: 'Login successful! Redirecting...' });
+        // This is the crucial part: tell AuthContext that login was successful API-wise
+        // AuthContext's fetchUser will then try to get user data using the new cookies
+        await auth.login(); 
+        // Redirection will be handled by the useEffect watching auth.isAuthenticated
+      } else {
+        // Handle errors
+        const errorMessage = data.error || (response.status === 401 ? 'Invalid credentials' : 'Login failed');
+        setFormState({ status: response.status === 401 ? 'invalid_credentials' : 'failed', message: errorMessage });
       }
-      // Handle errors
-      if (!response.ok) {
-        const msg = data.detail || (response.status === 401 ? 'Invalid credentials' : 'Login failed');
-        setFormState({ status: response.status === 401 ? 'invalid_credentials' : 'failed', message: msg });
-        return;
-      }
-      // Fallback for unexpected
-      setFormState({ status: 'error', message: 'An unexpected error occurred during login.' });
     } catch (error) {
-      console.error('Login error:', error);
+      console.error('Login page handleSubmit error:', error);
       setFormState({ status: 'error', message: 'An unexpected error occurred during login.' });
     }
   };

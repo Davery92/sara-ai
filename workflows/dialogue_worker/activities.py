@@ -142,4 +142,43 @@ async def save_artifact_activity(
                     raise Exception(f"API Error {resp.status}: {error_text}")
         except aiohttp.ClientError as e:
             log.error(f"HTTP Client error saving artifact {document_id}: {e}")
+            raise
+
+
+@activity.defn
+async def fetch_document_content_activity(
+    gateway_api_url: str,
+    document_id: str,
+    auth_token: str
+) -> dict:
+    """Fetches the latest version of an artifact via the gateway API."""
+    activity.heartbeat()
+    log.info(f"Fetching artifact ID: {document_id}")
+    api_url = f"{gateway_api_url}/v1/artifacts/{document_id}"
+    headers = {"Authorization": f"Bearer {auth_token}"}
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            # Assuming the GET endpoint for /v1/artifacts/{document_id} returns a list of documents,
+            # and we want the latest. The API should ideally return them ordered by created_at desc.
+            # For simplicity here, we'll assume the API returns the latest directly or the first in a list if ordered desc.
+            # A more robust approach might involve filtering/sorting if the API returns all versions unordered.
+            async with session.get(api_url, headers=headers, timeout=10.0) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    # Assuming the API returns the latest document data structure
+                    # If it returns a list, you might need to get the latest one:
+                    # latest_document = data[0] if data else None
+                    # return latest_document if latest_document else {}
+                    log.info(f"Artifact {document_id} fetched successfully.")
+                    return data # Assuming data is the latest document object
+                elif resp.status == 404:
+                     log.warning(f"Artifact {document_id} not found. Status: {resp.status}")
+                     return {} # Return empty dict for not found
+                else:
+                    error_text = await resp.text()
+                    log.error(f"Failed to fetch artifact {document_id}. Status: {resp.status}, Body: {error_text}")
+                    raise Exception(f"API Error {resp.status}: {error_text}")
+        except aiohttp.ClientError as e:
+            log.error(f"HTTP Client error fetching artifact {document_id}: {e}")
             raise 

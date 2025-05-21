@@ -19,7 +19,7 @@ class Document(Base):
     title = Column(Text, nullable=True)
     content = Column(Text, nullable=True)
     kind = Column(SAEnum(DocumentKind), nullable=False)
-    user_id = Column(Uuid, nullable=False) # Assuming User table has Uuid primary key named 'id'
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=False) # Assuming User table has Uuid primary key named 'id'
     # If you have a User model, you can add: # ForeignKey("users.id")
 
     # Composite primary key
@@ -38,7 +38,7 @@ class Suggestion(Base):
     suggested_text = Column(Text)
     description = Column(Text, nullable=True)
     is_resolved = Column(Boolean, default=False)
-    user_id = Column(Uuid, nullable=False) # Assuming User table has Uuid primary key
+    user_id = Column(Uuid, ForeignKey("users.id"), nullable=False) # Assuming User table has Uuid primary key
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     # Composite foreign key to Document table

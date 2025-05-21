@@ -10,7 +10,8 @@ from temporalio.common import RetryPolicy
 from .activities import (
     enhance_prompt_activity,
     publish_to_nats_activity,
-    save_artifact_activity
+    save_artifact_activity,
+    fetch_document_content_activity
 )
 
 # Import the LLM activity from llm_proxy. This might need path adjustment in a real setup.
@@ -175,13 +176,116 @@ class ChatOrchestrationWorkflow:
                     )
                     tool_content_for_llm = f"Successfully initiated creation of document '{title}' (ID: {doc_id}). Content has been generated and streamed."
 
+                    # Stream user-facing confirmation message
+                    confirmation_message = f"I've created the document '{title}' (ID: {doc_id}) for you."
+                    for chunk in [confirmation_message]: # Can break into chunks if needed
+                         await workflow.execute_activity(
+                            publish_to_nats_activity,
+                            args=[self._nats_url, self._nats_reply_subject,
+                                  {"type": "chat_chunk", "payload": {"delta_content": chunk}},
+                                  self._nats_headers],
+                            start_to_close_timeout=self._activity_timeout
+                        )
+                    # Signal end of chat message stream if necessary (handled by chat_finish typically)
+
                 elif function_name == "updateDocument":
-                    # Similar logic for update: fetch, generate, stream, save
-                    # Placeholder for now
                     doc_id_to_update = function_args.get("document_id")
                     update_description = function_args.get("description")
-                    tool_content_for_llm = f"Tool 'updateDocument' for doc ID {doc_id_to_update} with description '{update_description}' is not fully implemented in workflow yet."
-                    log.warning(tool_content_for_llm)
+
+                    if not doc_id_to_update or not update_description:
+                         tool_content_for_llm = "Error: updateDocument requires both document_id and description."
+                         log.warning(tool_content_for_llm)
+                    else:
+                        log.info(f"Fetching document {doc_id_to_update} for update.")
+                        try:
+                            # Fetch current document content and metadata
+                            # Assumes fetch_document_content_activity returns latest document data including content, title, kind
+                            document_data = await workflow.execute_activity(
+                                fetch_document_content_activity,
+                                args=[self._gateway_api_url, doc_id_to_update, self._session_auth_token],
+                                start_to_close_timeout=self._activity_timeout,
+                                retry_policy=RetryPolicy(maximum_attempts=2)
+                            )
+
+                            current_content = document_data.get("content", "")
+                            doc_title = document_data.get("title", "Untitled Document") # Preserve title/kind
+                            doc_kind = document_data.get("kind", "text")
+
+                            log.info(f"Initiating update for document {doc_id_to_update}.")
+
+                            # Publish update init message
+                            await workflow.execute_activity(
+                                publish_to_nats_activity,
+                                args=[self._nats_url, self._nats_reply_subject,
+                                      {"type": "artifact_update_init", "payload": {"document_id": doc_id_to_update, "title": doc_title, "kind": doc_kind}},
+                                      self._nats_headers],
+                                start_to_close_timeout=self._activity_timeout
+                            )
+
+                            # Construct prompt for updated content generation
+                            update_prompt_messages = list(self._message_history) # Use current context
+                            update_prompt_messages.append({
+                                "role": "user",
+                                "content": f"Please update the following document content based on the user's request: '{update_description}'.\n\nCurrent content:\n\n```\n{current_content}\n```\n\nProvide the full updated content."
+                            })
+
+                            # Generate updated content
+                            updated_content_llm_response = await workflow.execute_activity(
+                                call_ollama_with_tool_support,
+                                args=[self._llm_model, update_prompt_messages, True, False], # Stream, no tools
+                                start_to_close_timeout=self._llm_activity_timeout
+                            )
+
+                            full_updated_content = ""
+                            if updated_content_llm_response["type"] == "chat_content":
+                                for chunk in updated_content_llm_response["content"]:
+                                    full_updated_content += chunk
+                                    # Stream delta updates
+                                    await workflow.execute_activity(
+                                        publish_to_nats_activity,
+                                        args=[self._nats_url, self._nats_reply_subject,
+                                              {"type": "artifact_delta", "payload": {"document_id": doc_id_to_update, "delta_content": chunk}},
+                                              self._nats_headers],
+                                        start_to_close_timeout=self._activity_timeout
+                                    )
+                            else:
+                                log.warning(f"Could not generate updated content for document {doc_id_to_update}. LLM response: {updated_content_llm_response}")
+                                full_updated_content = current_content # Fallback to original content on error?
+                                tool_content_for_llm = f"Failed to generate updated content for document {doc_id_to_update}."
+
+                            # Publish artifact finish message
+                            await workflow.execute_activity(
+                                publish_to_nats_activity,
+                                args=[self._nats_url, self._nats_reply_subject,
+                                      {"type": "artifact_finish", "payload": {"document_id": doc_id_to_update}},
+                                      self._nats_headers],
+                                start_to_close_timeout=self._activity_timeout
+                            )
+
+                            if updated_content_llm_response["type"] == "chat_content":
+                                # Save the new version of the document
+                                await workflow.execute_activity(
+                                    save_artifact_activity,
+                                    args=[self._gateway_api_url, doc_id_to_update, doc_title, doc_kind, full_updated_content, self._session_auth_token],
+                                    start_to_close_timeout=self._activity_timeout
+                                )
+                                tool_content_for_llm = f"Successfully updated document '{doc_title}' (ID: {doc_id_to_update})."
+
+                                # Stream user-facing confirmation message
+                                confirmation_message = f"I've updated the document '{doc_title}' (ID: {doc_id_to_update}) for you."
+                                for chunk in [confirmation_message]: # Can break into chunks if needed
+                                     await workflow.execute_activity(
+                                        publish_to_nats_activity,
+                                        args=[self._nats_url, self._nats_reply_subject,
+                                              {"type": "chat_chunk", "payload": {"delta_content": chunk}},
+                                              self._nats_headers],
+                                        start_to_close_timeout=self._activity_timeout
+                                    )
+                                # Signal end of chat message stream if necessary (handled by chat_finish typically)
+
+                        except Exception as e:
+                            log.error(f"Error processing updateDocument for {doc_id_to_update}: {e}")
+                            tool_content_for_llm = f"Failed to update document {doc_id_to_update}. Error: {e}"
                 else:
                     tool_content_for_llm = f"Unknown tool: {function_name}"
                     log.warning(tool_content_for_llm)

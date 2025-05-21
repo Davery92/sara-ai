@@ -8,6 +8,9 @@ COPY services/gateway/requirements.txt .
 # Install dependencies including PyYAML
 RUN pip install --no-cache-dir -r requirements.txt PyYAML httpx websockets
 
+COPY services/gateway/alembic.ini /app/alembic.ini
+COPY services/gateway/alembic /app/alembic
+
 # Copy the gateway app code
 COPY services/gateway/app ./app
 COPY services/gateway/__init__.py ./services/gateway/

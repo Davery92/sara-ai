@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: dialogue_worker
+Version: 0.1.0
+Summary: Dialogue worker for Sara AI
+Requires-Python: >=3.12
+Requires-Dist: temporalio<2.0,>=1.11
+Requires-Dist: nats-py<3.0,>=2.0
+Requires-Dist: aiohttp
+Requires-Dist: prometheus-client<1.0,>=0.20
+Requires-Dist: PyJWT<3.0,>=2.8
+Requires-Dist: websockets

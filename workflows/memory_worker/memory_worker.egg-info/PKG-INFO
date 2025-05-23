@@ -1,9 +1,0 @@
-Metadata-Version: 2.4
-Name: memory_worker
-Version: 0.1.0
-Requires-Dist: temporalio>=1.3.0
-Requires-Dist: redis>=5
-Requires-Dist: sqlalchemy>=2
-Requires-Dist: asyncpg
-Requires-Dist: httpx
-Requires-Dist: pydantic

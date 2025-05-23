@@ -14,23 +14,25 @@ load_dotenv(os.path.join(repo_root, ".env"))
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ─── SQLAlchemy + pgvector imports ─────────────────────────────────────────────
+# ─── SQLAlchemy + pgvector imports ─────────────────────────────────────────────
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 # your Gateway's models:
 # Try different import paths based on environment
 try:
     # First try direct imports (for Docker)
-    from app.db.models import Message, Base
+    from app.db.models import EmbeddingMessage, Base # <-- CHANGE THIS LINE
 except ImportError:
     try:
         # Then try local project structure (for development)
-        from services.gateway.app.db.models import Message, Base
+        from services.gateway.app.db.models import EmbeddingMessage, Base # <-- CHANGE THIS LINE
     except ImportError:
         # Dynamic import as last resort
         import importlib
         gateway_models = importlib.import_module("app.db.models")
-        Message = gateway_models.Message
+        EmbeddingMessage = gateway_models.EmbeddingMessage # <-- CHANGE THIS LINE
         Base = gateway_models.Base
+# ────────────────────────────────────────────────────────────────────────────────
 # ────────────────────────────────────────────────────────────────────────────────
 
 # ─── NATS + HTTP client imports ────────────────────────────────────────────────
@@ -81,7 +83,7 @@ async def handle_message(msg):
         await conn.run_sync(Base.metadata.create_all)
 
     async with AsyncSessionLocal() as session:
-        session.add(Message(text=text, embedding=embedding))
+        session.add(EmbeddingMessage(text=text, embedding=embedding)) # <-- CHANGE THIS LINE
         await session.commit()
 
     print(f"Persisted embedding for message {msg_id}")

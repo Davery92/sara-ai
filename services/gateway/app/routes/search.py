@@ -1,7 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from ..db.models import Message
+# FIX: Changed 'Message' to 'EmbeddingMessage'
+from ..db.models import EmbeddingMessage
 from ..db.session import get_session
 from ..utils.embeddings import compute_embedding
 
@@ -20,9 +21,10 @@ async def semantic_search(
         raise HTTPException(status_code=500, detail=f"Embedding error: {e}")
 
     # 2) Nearest-neighbor lookup using pgvector <-> operator
+    # FIX: Changed 'Message' to 'EmbeddingMessage'
     stmt = (
-        select(Message.id, Message.text)
-        .order_by(Message.embedding.op("<->")(q_vec))
+        select(EmbeddingMessage.id, EmbeddingMessage.text)
+        .order_by(EmbeddingMessage.embedding.op("<->")(q_vec))
         .limit(k)
     )
     result = await session.execute(stmt)

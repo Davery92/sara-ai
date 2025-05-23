@@ -17,6 +17,10 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 # ----- MOCK CLASSES -----
+# Note: These mock classes are duplicated from conftest.py.
+# In a real project, you would ideally put shared mocks in a central file
+# and import them, rather than duplicating them. However, for a quick fix,
+# updating them directly is necessary.
 
 # Mock Redis
 class MockRedis:
@@ -257,20 +261,21 @@ def mock_pgvector():
     sys.modules['pgvector'] = MagicMock()
     sys.modules['pgvector.sqlalchemy'] = mock_vector_module
     
-    # Also patch the Message model's embedding attribute with corrected imports
+    # Also patch the EmbeddingMessage model's embedding attribute
     with patch('services.gateway.app.db.models.Vector', MockVector):
-        from services.gateway.app.db.models import Message
-        original_embedding = Message.embedding
+        # FIX: Changed 'Message' to 'EmbeddingMessage'
+        from services.gateway.app.db.models import EmbeddingMessage
+        original_embedding = EmbeddingMessage.embedding
         
         # Create a mockable embedding attribute
         mock_embedding = MagicMock()
         mock_embedding.op = lambda op: (lambda other: MagicMock())
-        Message.embedding = mock_embedding
+        EmbeddingMessage.embedding = mock_embedding # FIX: Changed 'Message' to 'EmbeddingMessage'
         
         yield
         
         # Restore original
-        Message.embedding = original_embedding
+        EmbeddingMessage.embedding = original_embedding # FIX: Changed 'Message' to 'EmbeddingMessage'
 
 # Configure environment variables
 @pytest.fixture(autouse=True)

@@ -18,6 +18,7 @@ import { MessageEditor } from './message-editor';
 import { DocumentPreview } from './document-preview';
 import { MessageReasoning } from './message-reasoning';
 import type { ArtifactKind } from './artifact';
+import { ThinkingDropdown } from './ThinkingDropdown';
 
 interface PurePreviewMessageProps {
   chatId: string;
@@ -131,7 +132,47 @@ const PurePreviewMessage = ({
               }
 
               if (type === 'text') {
-                // Check if this is an artifact-related message
+                const textContent = part.text;
+                const thinkRegex = /<think>([\s\S]*?)<\/think>/g;
+                const partsToRender: React.ReactNode[] = [];
+                let lastIndex = 0;
+                let match;
+                let partKeyIndex = 0;
+
+                while ((match = thinkRegex.exec(textContent)) !== null) {
+                  // Add text before <think>
+                  if (match.index > lastIndex) {
+                    partsToRender.push(
+                      <Markdown key={`${key}-pre-${partKeyIndex++}`}>
+                        {sanitizeText(textContent.substring(lastIndex, match.index))}
+                      </Markdown>
+                    );
+                  }
+
+                  // Add ThinkingDropdown for the content
+                  const thinkingContent = match[1];
+                  partsToRender.push(
+                    <ThinkingDropdown key={`${key}-think-${partKeyIndex++}`} content={thinkingContent} />
+                  );
+
+                  lastIndex = thinkRegex.lastIndex;
+                }
+
+                // Add remaining text after the last </think>
+                if (lastIndex < textContent.length) {
+                  partsToRender.push(
+                    <Markdown key={`${key}-post-${partKeyIndex++}`}>
+                      {sanitizeText(textContent.substring(lastIndex))}
+                    </Markdown>
+                  );
+                }
+
+                // If no think tags were found, partsToRender will be empty.
+                // In this case, render the original text content directly.
+                const contentToRender = partsToRender.length > 0 
+                  ? partsToRender 
+                  : <Markdown>{sanitizeText(textContent)}</Markdown>;
+                
                 const artifactDetails = getArtifactDetailsFromText(part.text);
                 
                 if (artifactDetails && message.role === 'assistant') {
@@ -142,7 +183,7 @@ const PurePreviewMessage = ({
                         data-testid="message-content"
                         className="flex flex-col gap-4"
                       >
-                        <Markdown>{sanitizeText(part.text)}</Markdown>
+                        {contentToRender}
                       </div>
                       
                       {/* Render a DocumentToolResult but use a placeholder ID that will be updated by WebSocket messages */}
@@ -187,7 +228,7 @@ const PurePreviewMessage = ({
                             message.role === 'user',
                         })}
                       >
-                        <Markdown>{sanitizeText(part.text)}</Markdown>
+                        {contentToRender}
                       </div>
                     </div>
                   );

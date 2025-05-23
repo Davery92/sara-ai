@@ -1,0 +1,6 @@
+temporalio<2.0,>=1.11
+nats-py<3.0,>=2.0
+aiohttp
+prometheus-client<1.0,>=0.20
+PyJWT<3.0,>=2.8
+websockets

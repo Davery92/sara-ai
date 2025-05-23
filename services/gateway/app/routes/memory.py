@@ -1,15 +1,18 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, cast
+from sqlalchemy.dialects import postgresql
 import os
-from ..db.models import Memory
+from ..db.models import Memory 
 from ..db.session import get_session
 from ..utils.embeddings import compute_embedding
-
+from pgvector.sqlalchemy import Vector
+import logging
+log = logging.getLogger("gateway.memory")
 router = APIRouter()
 
-MEMORY_TOP_N = int(os.getenv("MEMORY_TOP_N", 5))
+MEMORY_TOP_N = int(os.getenv("MEMORY_TOP_N", 10))
 
 class QueryReq(BaseModel):
     query: str = Field(..., description="Query text to search for relevant memories.")
@@ -24,26 +27,29 @@ async def memory_query(req: QueryReq, session: AsyncSession = Depends(get_sessio
     """Returns the top-N most relevant memory summaries for a given query and room."""
     n = req.top_n or MEMORY_TOP_N
     
-    # Try semantic search with embeddings first
     try:
         embed = await compute_embedding(req.query)
         
+        log.debug(f"Type of embed: {type(embed)}, first element: {type(embed[0]) if embed and len(embed) > 0 else 'N/A'}")
+
         stmt = (
             select(Memory.text)
             .where(Memory.room_id == req.room_id, Memory.type == "summary")
-            .order_by(Memory.embedding.op("<->")(embed))
+            .order_by(Memory.embedding.op("<->")(
+                cast(embed, Vector(len(embed)))
+            ))
             .limit(n)
         )
+        
+        log.info(f"Attempting semantic search query for room_id: {req.room_id}")
         result = await session.execute(stmt)
         rows = result.scalars().all()
+        log.info(f"Semantic search successful. Found {len(rows)} memories.")
         return [MemorySummary(text=row) for row in rows]
     
     except Exception as e:
-        # If embedding fails, fall back to latest entries
-        import logging
-        logging.warning(f"Embedding error in memory_query: {e}. Falling back to latest entries.")
+        log.warning(f"Embedding error in memory_query: {e}. Falling back to latest entries.")
         
-        # Fallback: just return the most recent summaries
         stmt = (
             select(Memory.text)
             .where(Memory.room_id == req.room_id, Memory.type == "summary")
@@ -54,7 +60,8 @@ async def memory_query(req: QueryReq, session: AsyncSession = Depends(get_sessio
         try:
             result = await session.execute(stmt)
             rows = result.scalars().all()
+            log.info(f"Fallback query successful. Found {len(rows)} memories.")
             return [MemorySummary(text=row) for row in rows]
         except Exception as fallback_error:
-            logging.error(f"Fallback query also failed: {fallback_error}")
-            return [] 
+            log.error(f"Fallback query also failed: {fallback_error}")
+            raise HTTPException(status_code=500, detail=f"Failed to query memories: {e}") 

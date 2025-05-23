@@ -1,0 +1,64 @@
+# compose/monitoring.yml
+version: "3.9"
+
+# Re-use the backend network defined in core.yml
+networks:
+  backend:
+    name: backend        # fixed name across overrides
+    driver: bridge
+
+services:
+  # ─────────── Prometheus ───────────
+  prometheus:
+    image: prom/prometheus:v2.52.0          # latest stable Apr-2025 :contentReference[oaicite:0]{index=0}
+    container_name: prometheus
+    restart: unless-stopped
+    environment:
+      - TZ=America/New_York
+    volumes:
+      - ../monitoring/prometheus/:/etc/prometheus/
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+    ports:
+      - "9090:9090"                         # UI → http://infra-ip:9090
+    networks: [ backend ]
+
+  # ─────────── Grafana ───────────
+  grafana:
+    image: grafana/grafana-oss:11.0.0       # stable OSS tag Apr-2025 :contentReference[oaicite:1]{index=1}
+    container_name: grafana
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - TZ=America/New_York
+    depends_on: [ prometheus ]
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../monitoring/grafana/provisioning/:/etc/grafana/provisioning/
+      - ../monitoring/grafana/dashboards/:/var/lib/grafana/dashboards/
+    ports:
+      - "3002:3000"                         # UI → http://infra-ip:3000
+    networks: [ backend ]
+
+  # ─────────── Node Exporter ───────────
+  node-exporter:
+    image: prom/node-exporter:v1.8.0        # current latest :contentReference[oaicite:2]{index=2}
+    container_name: node-exporter
+    restart: unless-stopped
+    pid: host
+    networks: [ backend ]
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+
+volumes:
+  prometheus-data:
+  grafana-data:

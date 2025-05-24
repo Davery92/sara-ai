@@ -4,11 +4,8 @@ import aiohttp
 import uuid # For document IDs if not passed
 
 from temporalio import activity
-from services.common.nats_helpers import NatsClient # Assuming you have a NatsClient class
-
-# Placeholder for actual NatsClient initialization if needed globally for activities,
-# or it can be instantiated per call / passed if worker context provides it.
-# For simplicity, activities might take NATS config/subjects as params.
+# Assuming you have a NatsClient class, if not, adjust or import nats.aio.client directly
+# from services.common.nats_helpers import NatsClient 
 
 log = logging.getLogger(__name__)
 
@@ -98,19 +95,19 @@ async def publish_to_nats_activity(
     """Publishes a message to a NATS subject."""
     activity.heartbeat()
     log.info(f"Publishing to NATS subject '{subject}': {json.dumps(payload)}")
-    nc = None
+    # Local import of NATS client to avoid circular imports or global state issues
+    import nats.aio.client
+    nc = nats.aio.client.Client()
     try:
-        # This assumes NatsClient handles connection and is async context managed
-        # or provides simple connect/publish/close methods.
-        # For a single publish, a new connection might be acceptable for simplicity in an activity.
-        async with NatsClient() as nats_client_instance: # NatsClient from services.common.nats_helpers
-             await nats_client_instance.connect([nats_url] if isinstance(nats_url, str) else nats_url)
-             await nats_client_instance.conn.publish(subject, json.dumps(payload).encode(), headers=headers)
-             log.info(f"Successfully published to {subject}")
+        await nc.connect(servers=[nats_url] if isinstance(nats_url, str) else nats_url)
+        await nc.publish(subject, json.dumps(payload).encode(), headers=headers)
+        log.info(f"Successfully published to {subject}")
     except Exception as e:
         log.error(f"Failed to publish to NATS subject '{subject}': {e}")
-        # Decide if this should raise an error to fail the activity
         raise
+    finally:
+        if nc.is_connected:
+            await nc.close()
 
 
 @activity.defn
@@ -143,3 +140,92 @@ async def save_artifact_activity(
         except aiohttp.ClientError as e:
             log.error(f"HTTP Client error saving artifact {document_id}: {e}")
             raise 
+
+# NEW ACTIVITY: Generate Chat Title
+@activity.defn
+async def generate_chat_title_activity(
+    llm_proxy_url: str,
+    llm_model: str,
+    first_user_message: str,
+    first_assistant_response: str
+) -> str:
+    """
+    Generates a concise title for a chat based on the first user message
+    and the assistant's initial response.
+    """
+    activity.heartbeat()
+    log.info("Generating chat title...")
+
+    prompt = f"Given the start of a conversation, generate a very short, concise title (max 5-7 words, no quotes). Example: 'User: What is AI? Assistant: AI is... Title: Introduction to AI'\n\n"
+    prompt += f"User: {first_user_message}\n"
+    prompt += f"Assistant: {first_assistant_response}\n"
+    prompt += "Title:"
+
+    messages = [
+        {"role": "system", "content": "You are a helpful assistant that generates concise chat titles."},
+        {"role": "user", "content": prompt}
+    ]
+
+    payload = {
+        "model": llm_model,
+        "messages": messages,
+        "stream": False # We want a single, complete response for the title
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(f"{llm_proxy_url}/v1/chat/completions", json=payload, timeout=10.0) as resp:
+                if resp.status != 200:
+                    text = await resp.text()
+                    log.error(f"LLM Proxy error generating title {resp.status} -> {text[:500]}")
+                    return "Untitled Chat" # Fallback title on error
+                
+                response_data = await resp.json()
+                title = response_data.get("choices", [{}])[0].get("message", {}).get("content", "").strip()
+                
+                if not title:
+                    log.warning("LLM returned empty title, using fallback.")
+                    return "Untitled Chat"
+                
+                # Trim to a reasonable length and remove any quotes
+                title = title.replace('"', '').replace("'", "").replace("Title:", "").strip()
+                if len(title) > 50: # Cap length
+                    title = title[:47] + "..."
+                
+                log.info(f"Generated chat title: '{title}'")
+                return title
+
+    except Exception as e:
+        log.error(f"Error calling LLM for title generation: {e}")
+        return "Untitled Chat" # Fallback title on error
+
+# NEW ACTIVITY: Update Chat Title in Gateway
+@activity.defn
+async def update_chat_title_activity(
+    gateway_api_url: str,
+    chat_id: str,
+    new_title: str,
+    auth_token: str
+):
+    """Updates the chat title in the Gateway service."""
+    activity.heartbeat()
+    log.info(f"Updating chat {chat_id} title to '{new_title}' via Gateway.")
+
+    api_url = f"{gateway_api_url}/api/chats/{chat_id}"
+    headers = {"Authorization": f"Bearer {auth_token}", "Content-Type": "application/json"}
+    payload = {"title": new_title}
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.put(api_url, json=payload, headers=headers, timeout=10.0) as resp:
+                if resp.status == 200:
+                    log.info(f"Chat {chat_id} title updated to '{new_title}' successfully.")
+                    return True
+                else:
+                    error_text = await resp.text()
+                    log.error(f"Failed to update chat {chat_id} title. Status: {resp.status}, Body: {error_text}")
+                    raise Exception(f"API Error {resp.status}: {error_text}")
+        except aiohttp.ClientError as e:
+            log.error(f"HTTP Client error updating chat title: {e}")
+            raise 
+

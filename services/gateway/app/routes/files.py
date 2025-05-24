@@ -1,14 +1,15 @@
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, status
 from fastapi.responses import JSONResponse
-from sqlalchemy.orm import Session
-import uuid
+from sqlalchemy.ext.asyncio import AsyncSession # Changed from sqlalchemy.orm.Session
+from uuid import UUID
 import os
 import shutil
 from typing import Optional
 
-from .. import models, schemas
-from ..database import get_db
-from ..auth import get_current_user_id
+from ..db import models # FIXED: Use relative import for models
+from ..schemas import artifacts as schemas # FIXED: Use relative import for schemas
+from ..db.session import get_session # FIXED: Use relative import for get_session
+from ..auth import get_current_user_id # FIXED: Use relative import for get_current_user_id
 
 # Configure the uploads directory
 UPLOAD_DIR = os.environ.get("UPLOAD_DIR", "/tmp/uploads")
@@ -32,8 +33,8 @@ def get_file_extension(filename: str) -> Optional[str]:
 @router.post("/upload", status_code=status.HTTP_201_CREATED)
 async def upload_file(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user_id: uuid.UUID = Depends(get_current_user_id)
+    db: AsyncSession = Depends(get_session), # Use AsyncSession
+    current_user_id: UUID = Depends(get_current_user_id) # Use UUID type
 ):
     """
     Upload a file to the server.
@@ -89,7 +90,7 @@ async def upload_file(
 @router.get("/{filename}")
 async def get_file(
     filename: str,
-    current_user_id: uuid.UUID = Depends(get_current_user_id)
+    current_user_id: UUID = Depends(get_current_user_id) # Use UUID type
 ):
     """
     Retrieve a file by filename.
@@ -109,4 +110,4 @@ async def get_file(
     return JSONResponse(
         status_code=status.HTTP_200_OK,
         content={"file_path": file_path}
-    ) 
+    )

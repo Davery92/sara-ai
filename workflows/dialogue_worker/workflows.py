@@ -10,11 +10,12 @@ from temporalio.common import RetryPolicy
 from .activities import (
     enhance_prompt_activity,
     publish_to_nats_activity,
-    save_artifact_activity
+    save_artifact_activity,
+    generate_chat_title_activity, # NEW
+    update_chat_title_activity # NEW
 )
 
-# Import the LLM activity from llm_proxy. This might need path adjustment in a real setup.
-# For now, assuming it can be imported. If workers are separate, use fully qualified task queue names.
+# Import the LLM activity from llm_proxy.
 from services.llm_proxy.app.activity import call_ollama_with_tool_support
 
 log = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class ChatOrchestrationWorkflow:
         self._memory_top_n: int = 3
         self._activity_timeout = timedelta(seconds=60)
         self._llm_activity_timeout = timedelta(seconds=180) # Longer for LLM calls
+        self._is_first_interaction = True # Track if it's the first message in this chat session
 
     @workflow.run
     async def run(self, config: dict) -> None:
@@ -52,11 +54,18 @@ class ChatOrchestrationWorkflow:
         self._memory_template = config.get("memory_template", self._memory_template)
         self._memory_top_n = config.get("memory_top_n", self._memory_top_n)
 
-        self._nats_headers = {"Ack": self._nats_ack_subject} if self._nats_ack_subject else None
+        # Determine if this is the very first interaction for this chat by checking initial_messages count
+        # The frontend sends an empty chat object first, then the first message.
+        # So, if initial_messages is empty (meaning no previous history loaded for this chat_id),
+        # then this is the first message.
+        self._is_first_interaction = (len(config.get("initial_messages", [])) == 0)
+
+        self._nats_headers = {"Ack": self_nats_ack_subject} if self_nats_ack_subject else None
 
         log.info(
             f"Workflow started. User: {self._user_id}, Room: {self._room_id}, "
-            f"ReplyTo: {self._nats_reply_subject}, LLM Model: {self._llm_model}"
+            f"ReplyTo: {self._nats_reply_subject}, LLM Model: {self._llm_model}, "
+            f"First Interaction: {self._is_first_interaction}"
         )
 
         # 1. Enhance initial prompt
@@ -78,7 +87,7 @@ class ChatOrchestrationWorkflow:
 
         # 2. Initial LLM call (with tool support enabled)
         llm_response = await workflow.execute_activity(
-            call_ollama_with_tool_support, # This is from llm_proxy
+            call_ollama_with_tool_support,
             args=[self._llm_model, self._message_history, True, True],  # model, messages, stream, use_document_tools
             start_to_close_timeout=self._llm_activity_timeout,
             retry_policy=RetryPolicy(maximum_attempts=2)
@@ -87,6 +96,50 @@ class ChatOrchestrationWorkflow:
         # Main loop for processing LLM responses and tool calls
         await self._process_llm_response(llm_response)
         
+        # After processing LLM response, if it was the first interaction, generate title
+        if self._is_first_interaction:
+            # Extract the first user message and assistant response
+            first_user_message_content = ""
+            first_assistant_response_content = ""
+
+            for msg in self._message_history:
+                if msg["role"] == "user":
+                    first_user_message_content = msg["content"]
+                if msg["role"] == "assistant":
+                    first_assistant_response_content = msg["content"]
+                    break # Stop after finding the first assistant response
+
+            if first_user_message_content and first_assistant_response_content:
+                log.info(f"First interaction detected. Generating title for chat {self._room_id}.")
+                generated_title = await workflow.execute_activity(
+                    generate_chat_title_activity,
+                    args=[
+                        workflow.conf().llm_proxy_url, # Need to pass LLM proxy URL
+                        self._llm_model,
+                        first_user_message_content,
+                        first_assistant_response_content
+                    ],
+                    start_to_close_timeout=timedelta(seconds=30),
+                    retry_policy=RetryPolicy(maximum_attempts=1) # Don't retry too much on title gen
+                )
+                
+                if generated_title:
+                    log.info(f"Generated title '{generated_title}'. Updating chat {self._room_id} in Gateway.")
+                    await workflow.execute_activity(
+                        update_chat_title_activity,
+                        args=[
+                            self._gateway_api_url,
+                            self._room_id,
+                            generated_title,
+                            self._session_auth_token
+                        ],
+                        start_to_close_timeout=timedelta(seconds=10),
+                        retry_policy=RetryPolicy(maximum_attempts=1)
+                    )
+            else:
+                log.warning(f"Could not generate title for chat {self._room_id}: missing first user or assistant message.")
+
+
         log.info(f"Workflow finished for User: {self._user_id}, Room: {self._room_id}")
         return
 
@@ -244,5 +297,3 @@ class ChatOrchestrationWorkflow:
     # async def add_message(self, message: dict):
     #     self._message_history.append(message)
     #     # Potentially re-trigger LLM call or other logic based on new message
-
-</rewritten_file> 

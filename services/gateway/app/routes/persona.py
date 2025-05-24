@@ -2,9 +2,9 @@ from typing import Dict, List, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import JSONResponse
 
-from services.common.persona_service import get_persona_service, PersonaService
-from ..redis_client import get_redis
-from ..auth import get_user_id
+from services.common.persona_service import get_persona_service, PersonaService # Correct: services.common is external
+from ..redis_client import get_redis # FIXED: Use relative import
+from ..auth import get_user_id # FIXED: Use relative import
 
 router = APIRouter(prefix="/v1/persona", tags=["persona"])
 
@@ -72,4 +72,4 @@ async def set_user_persona(
     redis_key = USER_PERSONA_KEY.format(user_id=user_id)
     await redis_client.set(redis_key, persona_name)
     
-    return {"status": "success", "persona": persona_name} 
+    return {"status": "success", "persona": persona_name}

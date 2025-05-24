@@ -2,9 +2,7 @@
 
 import os, time, logging
 from datetime import timedelta
-from uuid import uuid4
-from uuid import UUID
-import uuid
+from uuid import uuid4, UUID # Ensure UUID is imported here for type hinting
 
 import jwt  # pip install "pyjwt[crypto]"
 from fastapi import HTTPException, status, Depends, Header
@@ -40,16 +38,16 @@ def _sign(payload: dict, exp_seconds: float) -> tuple[str, str]:
     return token, jti
 
 
-def login(username: str) -> dict:
+def login(user_id: UUID) -> dict: # FIXED: Changed 'username' to 'user_id' (UUID type)
     """
     Returns a dict with access_token, refresh_token, token_type.
     
     Note: Password validation is done in the route handler, not here.
-    This function simply issues tokens for the given username.
+    This function simply issues tokens for the given user's UUID.
     """
-    log.info(f"Generating tokens for user: {username}")
-    access_token, access_jti   = _sign({"sub": username, "type": "access"},  _ACCESS_EXPIRE)
-    refresh_token, refresh_jti = _sign({"sub": username, "type": "refresh"}, _REFRESH_EXPIRE)
+    log.info(f"Generating tokens for user ID: {user_id}")
+    access_token, access_jti   = _sign({"sub": str(user_id), "type": "access"},  _ACCESS_EXPIRE) # Convert UUID to string for JWT
+    refresh_token, refresh_jti = _sign({"sub": str(user_id), "type": "refresh"}, _REFRESH_EXPIRE) # Convert UUID to string for JWT
     return {
         "access_token":  access_token,
         "refresh_token": refresh_token,
@@ -84,7 +82,18 @@ async def verify(
             # Redis down → skip
             pass
         
-        log.info(f"Token verified successfully for user {payload.get('sub')}")
+        # FIXED: Ensure 'sub' is a valid UUID string
+        user_id_str = payload.get("sub")
+        if not user_id_str:
+            log.warning("Token payload missing 'sub' claim")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token: 'sub' claim missing")
+        try:
+            UUID(user_id_str) # Attempt to convert to UUID to validate format
+        except ValueError:
+            log.warning(f"Token 'sub' claim '{user_id_str}' is not a valid UUID.")
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid token: 'sub' claim is not a UUID")
+            
+        log.info(f"Token verified successfully for user {user_id_str}")
         return payload
     except jwt.ExpiredSignatureError:
         log.warning("Token expired")
@@ -96,12 +105,15 @@ async def verify(
 
 async def get_user_id(payload: dict = Depends(verify)) -> str:
     """
-    Dependency that extracts the user ID from the JWT token.
+    Dependency that extracts the user ID (as a string) from the JWT token.
     
     Returns the user ID ('sub' field) from the JWT payload.
-    If no valid token is present, returns None.
+    If no valid token is present, raises HTTPException.
     """
-    return payload.get("sub")
+    user_id_str = payload.get("sub")
+    if not user_id_str: # This should ideally be caught by verify(), but defensive check
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Missing user ID in token")
+    return user_id_str
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -146,7 +158,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
 
 auth_middleware = AuthMiddleware
 
-async def get_current_user_id(authorization: str = Header(None)) -> uuid.UUID:
+async def get_current_user_id(authorization: str = Header(None)) -> UUID: # FIXED: Return UUID type directly
     if authorization is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -188,7 +200,7 @@ async def get_current_user_id(authorization: str = Header(None)) -> uuid.UUID:
         
         # Ensure the user_id is a valid UUID
         try:
-            return uuid.UUID(user_id_str)
+            return UUID(user_id_str) # Convert to UUID here
         except ValueError:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
@@ -209,7 +221,7 @@ async def get_current_user_id(authorization: str = Header(None)) -> uuid.UUID:
         )
     except Exception as e: # Catch-all for unexpected errors during parsing
         # Log this error server-side for investigation
-        # log.error(f"Unexpected error during token decoding: {str(e)}") 
+        # log.error(f"Unexpected error during token decoding: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Could not process authentication token due to an internal error"

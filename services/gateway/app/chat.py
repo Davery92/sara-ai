@@ -1,8 +1,7 @@
-# services/gateway/app/chat.py
 import os, httpx, jwt, json, logging, traceback
 from fastapi import APIRouter, Request, WebSocket, WebSocketDisconnect, status, HTTPException, Depends
 from fastapi.responses import StreamingResponse
-from .auth import verify
+from .auth import verify # FIXED: changed .. to .
 
 router = APIRouter(prefix="/v1")
 

@@ -116,7 +116,7 @@ async def enhance_prompt(payload: dict, auth_token: str = None) -> dict:
 
     return payload
 
-async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: str, nc: NATS):
+async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: str, nc: NATS, room_id_header: str):
     last_ack   = time.monotonic()
     INIT_ACK   = b"+INIT_ACK"
     CHUNK_ACK  = b"+ACK"
@@ -137,6 +137,9 @@ async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: s
             await nc.publish(ack_subject, INIT_ACK)
 
             chunk_no = 0
+            # Define common headers for NATS replies
+            nats_reply_headers = {"Room-Id": room_id_header}
+
             try:
                 async for message in ws:
                     # Check for error response from LLM proxy
@@ -145,14 +148,14 @@ async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: s
                         if "error" in parsed:
                             error_msg = parsed["error"]
                             log.error(f"LLM proxy returned error: {error_msg}")
-                            await nc.publish(reply_subject, json.dumps({"error": f"LLM service error: {error_msg}"}).encode())
+                            await nc.publish(reply_subject, json.dumps({"error": f"LLM service error: {error_msg}"}).encode(), headers=nats_reply_headers)
                             return
                     except json.JSONDecodeError:
                         pass  # Not JSON, continue normal processing
 
                     data = message.encode()
                     log.info("⇢ to NATS %s : %.120s", reply_subject, data)
-                    await nc.publish(reply_subject, data)
+                    await nc.publish(reply_subject, data, headers=nats_reply_headers)
                     CHUNKS_RELAYED.labels(model=model_name).inc()
 
                     chunk_no += 1
@@ -165,14 +168,14 @@ async def forward_to_llm_proxy(payload: dict, reply_subject: str, ack_subject: s
                         await ws.close()
                         break
             finally:
-                await nc.publish(reply_subject, b"[DONE]")
+                await nc.publish(reply_subject, b"[DONE]", headers=nats_reply_headers)
                 await ack_sid.unsubscribe()
     except websockets.exceptions.WebSocketException as e:
         log.error(f"WebSocket error: {e}")
-        await nc.publish(reply_subject, json.dumps({"error": f"Failed to connect to LLM service: {str(e)}"}).encode())
+        await nc.publish(reply_subject, json.dumps({"error": f"Failed to connect to LLM service: {str(e)}"}).encode(), headers={"Room-Id": room_id_header})
     except Exception as e:
         log.exception(f"Error in LLM proxy communication: {e}")
-        await nc.publish(reply_subject, json.dumps({"error": f"Internal error: {str(e)}"}).encode())
+        await nc.publish(reply_subject, json.dumps({"error": f"Internal error: {str(e)}"}).encode(), headers={"Room-Id": room_id_header})
 
 async def on_request(msg, nc):
     hdrs = msg.headers or {}
@@ -195,20 +198,8 @@ async def on_request(msg, nc):
             hdrs[field] = hdrs[field].decode()
 
     try:
-        verify(auth_token)
-    except InvalidTokenError:
-        log.warning("JWT verify failed")
-        # Notify client of auth failure
-        if reply_subject:
-            await nc.publish(reply_subject, json.dumps({
-                "error": "Authentication failed"
-            }).encode())
-        await msg.term()
-        return
-
-    try:
         payload = json.loads(msg.data)
-        room_id = payload.get("room_id")
+        room_id = payload.get("room_id") # This is already a string UUID
         user_id = payload.get("user_id")
         
         if not room_id:
@@ -228,10 +219,10 @@ async def on_request(msg, nc):
         
         if use_document_tools:
             # Forward directly to WebSocket and handle possible artifact creation/update
-            await forward_with_artifact_support(enhanced_payload, reply_subject, ack_subject, nc, auth_token)
+            await forward_with_artifact_support(enhanced_payload, reply_subject, ack_subject, nc, auth_token, room_id)
         else:
             # Use the regular forwarding for normal chat
-            await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc)
+            await forward_to_llm_proxy(enhanced_payload, reply_subject, ack_subject, nc, room_id)
             
         await msg.ack()
     except Exception as e:
@@ -243,7 +234,7 @@ async def on_request(msg, nc):
             }).encode())
         await msg.term()
 
-async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc, auth_token):
+async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc, auth_token, room_id_header: str):
     """
     Handles forwarding to LLM proxy with support for artifact creation/update.
     Detects when LLM outputs a tool call and initiates the artifact workflow.
@@ -281,6 +272,9 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
             tool_call_detected = False
             artifact_chunks = []
             
+            # Define common headers for NATS replies
+            nats_reply_headers = {"Room-Id": room_id_header}
+
             try:
                 async for message in ws:
                     # Check for artifact tool call response from LLM proxy
@@ -290,7 +284,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                         # Check if this is a tool call response for artifact creation
                         if parsed.get("type") == "tool_calls":
                             tool_call_detected = True
-                            log.info("Tool call detected for artifact creation/update")
+                            log.info("Found tool calls in streaming response: %s", parsed.get("content", []))
                             
                             # Send appropriate WebSocket message for artifact creation/update
                             for tool_call in parsed.get("content", []):
@@ -311,7 +305,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                     "kind": arguments.get("kind", "text")
                                                 }
                                             }
-                                            await nc.publish(reply_subject, json.dumps(artifact_init).encode())
+                                            await nc.publish(reply_subject, json.dumps(artifact_init).encode(), headers=nats_reply_headers)
                                             
                                             # Send a regular assistant message about the artifact creation
                                             assistant_message = {
@@ -323,7 +317,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                     }
                                                 ]
                                             }
-                                            await nc.publish(reply_subject, json.dumps(assistant_message).encode())
+                                            await nc.publish(reply_subject, json.dumps(assistant_message).encode(), headers=nats_reply_headers)
                                             
                                             # Now generate content based on conversation context
                                             await generate_artifact_content(
@@ -335,7 +329,9 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                 room_id,
                                                 reply_subject,
                                                 nc,
-                                                payload.get("messages", [])
+                                                payload.get("messages", []),
+                                                auth_token, # Pass auth_token for API call
+                                                nats_reply_headers
                                             )
                                             
                                         elif name == "updateDocument":
@@ -348,7 +344,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                         "description": arguments.get("description", "")
                                                     }
                                                 }
-                                                await nc.publish(reply_subject, json.dumps(artifact_update).encode())
+                                                await nc.publish(reply_subject, json.dumps(artifact_update).encode(), headers=nats_reply_headers)
                                                 
                                                 # Send a regular assistant message about the artifact update
                                                 assistant_message = {
@@ -360,7 +356,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                         }
                                                     ]
                                                 }
-                                                await nc.publish(reply_subject, json.dumps(assistant_message).encode())
+                                                await nc.publish(reply_subject, json.dumps(assistant_message).encode(), headers=nats_reply_headers)
                                                 
                                                 # Fetch current content and generate updated content
                                                 await update_artifact_content(
@@ -372,13 +368,14 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                                                     reply_subject,
                                                     nc,
                                                     payload.get("messages", []),
-                                                    auth_token
+                                                    auth_token,
+                                                    nats_reply_headers
                                                 )
                                             else:
                                                 log.error("Update document tool call missing document_id")
                                                 await nc.publish(reply_subject, json.dumps({
                                                     "error": "Missing document_id in updateDocument tool call"
-                                                }).encode())
+                                                }).encode(), headers=nats_reply_headers)
                                         
                                         # Don't continue processing the WebSocket stream - we're handling via artifact flow
                                         break
@@ -394,7 +391,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                         if "error" in parsed:
                             error_msg = parsed["error"]
                             log.error(f"LLM proxy returned error: {error_msg}")
-                            await nc.publish(reply_subject, json.dumps({"error": f"LLM service error: {error_msg}"}).encode())
+                            await nc.publish(reply_subject, json.dumps({"error": f"LLM service error: {error_msg}"}).encode(), headers=nats_reply_headers)
                             return
                             
                     except json.JSONDecodeError:
@@ -404,7 +401,7 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
                     if not tool_call_detected:
                         data = message.encode()
                         log.info("⇢ to NATS %s : %.120s", reply_subject, data)
-                        await nc.publish(reply_subject, data)
+                        await nc.publish(reply_subject, data, headers=nats_reply_headers)
                         CHUNKS_RELAYED.labels(model=model_name).inc()
 
                         chunk_no += 1
@@ -419,16 +416,16 @@ async def forward_with_artifact_support(payload, reply_subject, ack_subject, nc,
             finally:
                 # Only send DONE if it was a regular chat (not artifact creation)
                 if not tool_call_detected:
-                    await nc.publish(reply_subject, b"[DONE]")
+                    await nc.publish(reply_subject, b"[DONE]", headers=nats_reply_headers)
                 await ack_sid.unsubscribe()
     except websockets.exceptions.WebSocketException as e:
         log.error(f"WebSocket error: {e}")
-        await nc.publish(reply_subject, json.dumps({"error": f"Failed to connect to LLM service: {str(e)}"}).encode())
+        await nc.publish(reply_subject, json.dumps({"error": f"Failed to connect to LLM service: {str(e)}"}).encode(), headers={"Room-Id": room_id_header})
     except Exception as e:
         log.exception(f"Error in LLM proxy communication: {e}")
-        await nc.publish(reply_subject, json.dumps({"error": f"Internal error: {str(e)}"}).encode())
+        await nc.publish(reply_subject, json.dumps({"error": f"Internal error: {str(e)}"}).encode(), headers={"Room-Id": room_id_header})
 
-async def generate_artifact_content(model, document_id, kind, title, user_id, room_id, reply_subject, nc, messages):
+async def generate_artifact_content(model, document_id, kind, title, user_id, room_id, reply_subject, nc, messages, auth_token: str, nats_reply_headers: dict): # ADDED auth_token
     """
     Generates content for a newly created artifact and streams it via WebSocket
     """
@@ -496,7 +493,7 @@ async def generate_artifact_content(model, document_id, kind, title, user_id, ro
                             "delta": content
                         }
                     }
-                    await nc.publish(reply_subject, json.dumps(ws_delta).encode())
+                    await nc.publish(reply_subject, json.dumps(ws_delta).encode(), headers=nats_reply_headers)
                     
                 except Exception as e:
                     log.exception(f"Error processing content generation chunk: {e}")
@@ -505,10 +502,11 @@ async def generate_artifact_content(model, document_id, kind, title, user_id, ro
             try:
                 async with aiohttp.ClientSession() as session:
                     headers = {"Content-Type": "application/json"}
+                    # Re-add Authorization header for backend API call
+                    if auth_token:
+                        headers["Authorization"] = f"Bearer {auth_token}"
+
                     body = {
-                        "documentId": document_id,
-                        "user_id": user_id, 
-                        "room_id": room_id,
                         "title": title,
                         "kind": kind,
                         "content": full_content
@@ -518,7 +516,7 @@ async def generate_artifact_content(model, document_id, kind, title, user_id, ro
                         json=body,
                         headers=headers
                     ) as resp:
-                        if resp.status != 200:
+                        if resp.status != 201: # Check for 201 Created status
                             error_text = await resp.text()
                             log.error(f"Failed to save artifact: {error_text}")
             except Exception as e:
@@ -531,7 +529,7 @@ async def generate_artifact_content(model, document_id, kind, title, user_id, ro
                     "documentId": document_id
                 }
             }
-            await nc.publish(reply_subject, json.dumps(ws_finish).encode())
+            await nc.publish(reply_subject, json.dumps(ws_finish).encode(), headers=nats_reply_headers)
             
     except Exception as e:
         log.exception(f"Error in artifact content generation: {e}")
@@ -541,15 +539,17 @@ async def generate_artifact_content(model, document_id, kind, title, user_id, ro
                 "message": f"Error generating artifact content: {str(e)}"
             }
         }
-        await nc.publish(reply_subject, json.dumps(error_msg).encode())
+        await nc.publish(reply_subject, json.dumps(error_msg).encode(), headers=nats_reply_headers)
 
-async def update_artifact_content(model, document_id, description, user_id, room_id, reply_subject, nc, messages, auth_token):
+async def update_artifact_content(model, document_id, description, user_id, room_id, reply_subject, nc, messages, auth_token: str, nats_reply_headers: dict):
     """
     Updates content for an existing artifact and streams it via WebSocket
     """
     try:
         # Fetch current document content
         current_content = ""
+        kind = "text" # Default kind
+        title = "Untitled" # Default title
         try:
             async with aiohttp.ClientSession() as session:
                 headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
@@ -559,9 +559,14 @@ async def update_artifact_content(model, document_id, description, user_id, room
                 ) as resp:
                     if resp.status == 200:
                         doc_data = await resp.json()
-                        current_content = doc_data.get("content", "")
-                        kind = doc_data.get("kind", "text")
-                        title = doc_data.get("title", "Untitled")
+                        # Get the latest version's content
+                        if isinstance(doc_data, list) and len(doc_data) > 0:
+                            latest_doc = doc_data[0] # Assuming latest is first due to desc ordering in getter
+                            current_content = latest_doc.get("content", "")
+                            kind = latest_doc.get("kind", "text")
+                            title = latest_doc.get("title", "Untitled")
+                        else:
+                            log.warning(f"No document content found for {document_id}, possibly empty list.")
                     else:
                         log.error(f"Failed to fetch artifact: Status {resp.status}")
                         error_text = await resp.text()
@@ -569,13 +574,13 @@ async def update_artifact_content(model, document_id, description, user_id, room
                         # Send error to client
                         await nc.publish(reply_subject, json.dumps({
                             "error": f"Failed to fetch document: {error_text}"
-                        }).encode())
+                        }).encode(), headers=nats_reply_headers)
                         return
         except Exception as e:
             log.exception(f"Error fetching artifact: {e}")
             await nc.publish(reply_subject, json.dumps({
                 "error": f"Error fetching document: {str(e)}"
-            }).encode())
+            }).encode(), headers=nats_reply_headers)
             return
         
         # Create system prompt for content update
@@ -641,7 +646,7 @@ async def update_artifact_content(model, document_id, description, user_id, room
                             "delta": content
                         }
                     }
-                    await nc.publish(reply_subject, json.dumps(ws_delta).encode())
+                    await nc.publish(reply_subject, json.dumps(ws_delta).encode(), headers=nats_reply_headers)
                     
                 except Exception as e:
                     log.exception(f"Error processing content update chunk: {e}")
@@ -654,9 +659,6 @@ async def update_artifact_content(model, document_id, description, user_id, room
                         "Authorization": f"Bearer {auth_token}" if auth_token else ""
                     }
                     body = {
-                        "documentId": document_id,
-                        "user_id": user_id, 
-                        "room_id": room_id,
                         "title": title,
                         "kind": kind,
                         "content": full_content
@@ -666,7 +668,7 @@ async def update_artifact_content(model, document_id, description, user_id, room
                         json=body,
                         headers=headers
                     ) as resp:
-                        if resp.status != 200:
+                        if resp.status != 201: # Check for 201 Created status
                             error_text = await resp.text()
                             log.error(f"Failed to save updated artifact: {error_text}")
             except Exception as e:
@@ -679,7 +681,7 @@ async def update_artifact_content(model, document_id, description, user_id, room
                     "documentId": document_id
                 }
             }
-            await nc.publish(reply_subject, json.dumps(ws_finish).encode())
+            await nc.publish(reply_subject, json.dumps(ws_finish).encode(), headers=nats_reply_headers)
             
     except Exception as e:
         log.exception(f"Error in artifact content update: {e}")
@@ -689,7 +691,7 @@ async def update_artifact_content(model, document_id, description, user_id, room
                 "message": f"Error updating artifact content: {str(e)}"
             }
         }
-        await nc.publish(reply_subject, json.dumps(error_msg).encode())
+        await nc.publish(reply_subject, json.dumps(error_msg).encode(), headers=nats_reply_headers)
 
 async def main():
     start_http_server(METRICS_PORT)

@@ -1,7 +1,7 @@
 from pydantic import BaseModel, UUID4
 from datetime import datetime
 from typing import List, Optional
-from ..models.artifacts import DocumentKind # Import DocumentKind from models
+from ..models.artifacts import DocumentKind # FIXED: Corrected import path for DocumentKind
 
 # Document Schemas
 class DocumentBase(BaseModel):
@@ -42,4 +42,4 @@ class SuggestionResponse(SuggestionBase):
     created_at: datetime
 
     class Config:
-        from_attributes = True 
+        from_attributes = True

@@ -5,12 +5,11 @@ from sqlalchemy.orm import DeclarativeBase, relationship
 import uuid
 import enum
 
-# --- Temporarily comment out these lines ---
-from sqlalchemy.dialects.postgresql import UUID # KEEP THIS FOR NOW
-# from sqlalchemy.dialects.postgresql import JSONB # <--- COMMENT OUT
-# from pgvector.sqlalchemy import Vector # <--- COMMENT OUT
+# Corrected Imports:
+from sqlalchemy.dialects.postgresql import UUID, JSONB # ADDED JSONB import
+from pgvector.sqlalchemy import Vector # ADDED Vector import
 
-print("DEBUG: models.py is being imported.") # Keep this!
+print("DEBUG: models.py is being imported.")
 
 class Base(DeclarativeBase):
     pass
@@ -25,8 +24,7 @@ class Memory(Base):
     room_id    = Column(UUID(as_uuid=True), nullable=False, index=True)
     type       = Column(Enum(MessageType), nullable=False, default=MessageType.raw)
     text       = Column(Text, nullable=False)
-    # embedding  = Column(Vector(1024)) # <--- CHANGE THIS LINE
-    embedding = Column(Text, nullable=True) # Use Text instead of Vector for now
+    embedding  = Column(Vector(1024), nullable=True) # FIXED: Changed back to Vector(1024)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (
         Index("ix_memory_room_type_created", "room_id", "type", "created_at"),
@@ -37,8 +35,7 @@ class EmbeddingMessage(Base):
     id         = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     room_id    = Column(UUID(as_uuid=True), nullable=False, index=True)
     content    = Column(Text, nullable=False)
-    # embedding  = Column(Vector(1024), nullable=True) # <--- CHANGE THIS LINE
-    embedding = Column(Text, nullable=True) # Use Text instead of Vector for now
+    embedding  = Column(Vector(1024), nullable=True) # FIXED: Changed back to Vector(1024)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (
         Index("ix_message_room_created", "room_id", "created_at"),
@@ -66,12 +63,10 @@ class ChatMessage(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     chat_id = Column(UUID(as_uuid=True), ForeignKey("chats.id"), nullable=False, index=True)
     role = Column(String, nullable=False)
-    # parts = Column(JSONB, nullable=False) # <--- COMMENT OUT
-    parts = Column(Text, nullable=False) # Use Text instead of JSONB
-    # attachments = Column(JSONB, nullable=False, default=[]) # <--- COMMENT OUT
-    attachments = Column(Text, nullable=False, default="[]") # Use Text, default to string
+    parts = Column(JSONB, nullable=False) # FIXED: Changed back to JSONB
+    attachments = Column(JSONB, nullable=False, default=[]) # FIXED: Changed back to JSONB, default to empty list
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     chat = relationship("Chat", back_populates="messages")
 
 __all__ = ["Base", "Memory", "EmbeddingMessage", "User", "Chat", "ChatMessage"]
-print("DEBUG: models.py finished importing.") # Keep this!
+print("DEBUG: models.py finished importing.")

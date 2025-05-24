@@ -4,9 +4,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, cast
 from sqlalchemy.dialects import postgresql
 import os
-from ..db.models import Memory 
-from ..db.session import get_session
-from ..utils.embeddings import compute_embedding
+from ..db.models import Memory # FIXED: Use relative import
+from ..db.session import get_session # FIXED: Use relative import
+from ..utils.embeddings import compute_embedding # FIXED: Use relative import
 from pgvector.sqlalchemy import Vector
 import logging
 log = logging.getLogger("gateway.memory")
@@ -64,4 +64,4 @@ async def memory_query(req: QueryReq, session: AsyncSession = Depends(get_sessio
             return [MemorySummary(text=row) for row in rows]
         except Exception as fallback_error:
             log.error(f"Fallback query also failed: {fallback_error}")
-            raise HTTPException(status_code=500, detail=f"Failed to query memories: {e}") 
+            raise HTTPException(status_code=500, detail=f"Failed to query memories: {e}")

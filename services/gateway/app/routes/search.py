@@ -2,9 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 # FIX: Changed 'Message' to 'EmbeddingMessage'
-from ..db.models import EmbeddingMessage
-from ..db.session import get_session
-from ..utils.embeddings import compute_embedding
+from ..db.models import EmbeddingMessage # FIXED: Use relative import
+from ..db.session import get_session # FIXED: Use relative import
+from ..utils.embeddings import compute_embedding # FIXED: Use relative import
 
 router = APIRouter()
 

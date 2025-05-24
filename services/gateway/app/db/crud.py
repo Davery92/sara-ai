@@ -1,14 +1,15 @@
-# services/gateway/app/db/crud.py
-
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import desc, asc, delete
 from typing import List, Optional, Dict, Any
 from uuid import UUID, uuid4
 from datetime import datetime
+import json # ADDED: for json.loads/dumps
 
-# Import all models needed for CRUD operations
-from ..db.models import User, Chat, ChatMessage, EmbeddingMessage, Memory, Base # Assuming User is also in models.py
+# Import all core models for CRUD operations
+from ..db.models import User, Chat, ChatMessage, EmbeddingMessage, Memory, Base
+# Import artifact-related models and enum
+from ..models.artifacts import Document, Suggestion, DocumentKind # FIXED: Corrected import path for DocumentKind, Document, Suggestion
 
 # --- Chat Operations ---
 
@@ -91,6 +92,19 @@ async def delete_chat_by_id(db: AsyncSession, chat_id: UUID, user_id: UUID) -> b
     # Delete Memories associated with this room_id (assuming room_id == chat_id for memories)
     await db.execute(delete(Memory).where(Memory.room_id == chat_id))
 
+    # ADDED: Delete Documents associated with this user_id and document.id (or related to chat_id if applicable)
+    # Documents might not be directly linked to chat_id, but to user_id.
+    # For simplicity, we'll assume a direct delete by user_id for now if no chat_id link.
+    # If documents should be deleted *only* if linked to a specific chat, more complex logic is needed.
+    # For now, let's assume if a chat is deleted, its related documents are also deleted.
+    # This requires adding chat_id to the Document model if it's not there, or finding another link.
+    # Given the current Document model, it only has `user_id`. So deleting docs by user_id
+    # would delete ALL docs for that user. This is probably not intended.
+    # Let's SKIP deleting `Document` and `Suggestion` here for now, as they are independent of `Chat`.
+    # They should have their own separate deletion routes (e.g., delete artifact).
+    # You already have `deleteDocumentsByIdAfterTimestamp` and related logic in `artifacts.py`.
+    # This CRUD is for `Chat` specific entities.
+
     # Finally, delete the chat itself
     await db.delete(chat_to_delete)
     await db.commit()
@@ -102,16 +116,17 @@ async def save_chat_message(
     db: AsyncSession,
     chat_id: UUID,
     role: str,
-    parts: List[Dict],
-    attachments: List[Dict],
+    # parts and attachments are passed as JSON strings from the API route
+    parts: str, # Changed type from List[Dict] to str
+    attachments: str, # Changed type from List[Dict] to str
     created_at: datetime
 ) -> ChatMessage:
     """Saves a new message to the chat history (messages_v2 table)."""
     new_message = ChatMessage(
         chat_id=chat_id,
         role=role,
-        parts=parts,
-        attachments=attachments,
+        parts=parts, # Store as string
+        attachments=attachments, # Store as string
         created_at=created_at
     )
     db.add(new_message)
@@ -151,3 +166,118 @@ async def get_user_by_id(db: AsyncSession, user_id: UUID) -> Optional[User]:
         select(User).where(User.id == user_id)
     )
     return result.scalars().first()
+
+# ADDED CRUD functions for Document and Suggestion
+async def save_document(
+    db: AsyncSession,
+    doc_id: UUID,
+    title: str,
+    kind: DocumentKind, # Use DocumentKind enum
+    content: str,
+    user_id: UUID,
+    created_at: datetime
+) -> Document:
+    new_document = Document(
+        id=doc_id,
+        title=title,
+        kind=kind.value, # Store enum value as string
+        content=content,
+        user_id=user_id,
+        created_at=created_at
+    )
+    db.add(new_document)
+    await db.commit()
+    await db.refresh(new_document)
+    return new_document
+
+async def get_document_by_id(db: AsyncSession, doc_id: UUID, user_id: UUID) -> Optional[Document]:
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == doc_id, Document.user_id == user_id)
+        .order_by(desc(Document.created_at)) # Get the latest version
+    )
+    return result.scalars().first()
+
+async def get_all_document_versions_by_id(db: AsyncSession, doc_id: UUID, user_id: UUID) -> List[Document]:
+    result = await db.execute(
+        select(Document)
+        .where(Document.id == doc_id, Document.user_id == user_id)
+        .order_by(asc(Document.created_at)) # All versions, oldest first
+    )
+    return result.scalars().all()
+
+async def delete_document_versions_after_timestamp(
+    db: AsyncSession,
+    doc_id: UUID,
+    user_id: UUID,
+    timestamp: datetime
+) -> bool:
+    # First, verify ownership for any version to prevent unauthorized deletion attempts
+    owner_check = await db.execute(
+        select(Document.id).where(Document.id == doc_id, Document.user_id == user_id)
+    )
+    if not owner_check.scalars().first():
+        return False # Document not found or not owned by user
+
+    delete_stmt = delete(Document).where(
+        Document.id == doc_id,
+        Document.user_id == user_id,
+        Document.created_at > timestamp
+    )
+    result = await db.execute(delete_stmt)
+    await db.commit()
+    return result.rowcount > 0
+
+async def save_suggestion(
+    db: AsyncSession,
+    suggestion_id: UUID,
+    document_id: UUID,
+    document_created_at: datetime,
+    original_text: str,
+    suggested_text: str,
+    description: Optional[str],
+    is_resolved: bool,
+    user_id: UUID,
+    created_at: datetime
+) -> Suggestion:
+    new_suggestion = Suggestion(
+        id=suggestion_id,
+        document_id=document_id,
+        document_created_at=document_created_at,
+        original_text=original_text,
+        suggested_text=suggested_text,
+        description=description,
+        is_resolved=is_resolved,
+        user_id=user_id,
+        created_at=created_at
+    )
+    db.add(new_suggestion)
+    await db.commit()
+    await db.refresh(new_suggestion)
+    return new_suggestion
+
+async def get_suggestions_by_document_id(db: AsyncSession, document_id: UUID, user_id: UUID) -> List[Suggestion]:
+    result = await db.execute(
+        select(Suggestion)
+        .where(Suggestion.document_id == document_id, Suggestion.user_id == user_id)
+        .order_by(asc(Suggestion.created_at))
+    )
+    return result.scalars().all()
+
+async def update_suggestion(
+    db: AsyncSession,
+    suggestion_id: UUID,
+    user_id: UUID,
+    is_resolved: Optional[bool] = None
+) -> Optional[Suggestion]:
+    from sqlalchemy import update as sa_update
+    stmt = (
+        sa_update(Suggestion)
+        .where(Suggestion.id == suggestion_id, Suggestion.user_id == user_id)
+        .values(is_resolved=is_resolved, created_at=datetime.utcnow())
+        .returning(Suggestion) # Return the updated object
+    )
+    result = await db.execute(stmt)
+    updated_suggestion = result.scalars().first()
+    await db.commit()
+    return updated_suggestion

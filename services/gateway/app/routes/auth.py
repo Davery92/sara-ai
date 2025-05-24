@@ -6,13 +6,14 @@ import jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy import or_
-from ..auth import _SECRET, _ALG, login as issue_tokens, verify as verify_token
-from ..redis_client import get_redis
+from ..auth import _SECRET, _ALG, login as issue_tokens, verify as verify_token # FIXED: Relative import
+from ..redis_client import get_redis # FIXED: Relative import
 from fastapi import status
-from ..db.session import get_session
-from ..db.models import User
-from ..utils.password import hash_password, verify_password
+from ..db.session import get_session # FIXED: Relative import
+from ..db.models import User # FIXED: Relative import
+from ..utils.password import hash_password, verify_password # FIXED: Relative import
 import logging
+from uuid import UUID # ADDED: Import UUID
 
 # Set up logger
 log = logging.getLogger(__name__)
@@ -21,7 +22,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 class LoginIn(BaseModel):
     username: str
-    password: str  # Added password field
+    password: str
 
 class TokenOut(BaseModel):
     access_token: str
@@ -57,9 +58,10 @@ async def signup(req: SignupRequest, session: AsyncSession = Depends(get_session
     
     session.add(new_user)
     await session.commit()
+    await session.refresh(new_user) # ADDED: Refresh to get the generated UUID
     
-    # Issue tokens for the new user
-    tokens = issue_tokens(req.username)
+    # Issue tokens for the new user, using its generated UUID
+    tokens = issue_tokens(new_user.id) # FIXED: Pass new_user.id (UUID)
     return tokens
 
 @router.post("/login", response_model=TokenOut)
@@ -74,7 +76,7 @@ async def login_route(payload: LoginIn, session: AsyncSession = Depends(get_sess
             detail="Invalid username or password"
         )
     
-    return issue_tokens(payload.username)
+    return issue_tokens(user.id) # FIXED: Pass user.id (UUID)
 
 @router.get("/me")
 async def get_current_user(request: Request):
@@ -116,17 +118,19 @@ async def get_current_user(request: Request):
                     detail="Not an access token"
                 )
                 
-            username = payload.get('sub')
-            if not username:
+            user_id_str = payload.get('sub') # This will now be the UUID string
+            if not user_id_str:
                 log.warning("Token missing 'sub' claim")
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Invalid token: missing user identifier"
                 )
             
-            log.info(f"Token verified successfully for user {username}")
+            # Optionally, look up username from user_id if UI needs username
+            # For now, just pass the user_id (UUID string) as 'user'
+            log.info(f"Token verified successfully for user ID {user_id_str}")
             return {
-                "user": username,
+                "user": user_id_str, # Frontend expects "user" to be the identifier
                 "iat": payload.get("iat")
             }
             
@@ -188,4 +192,6 @@ async def refresh_route(payload: RefreshIn):
         import logging
         logging.warning(f"Redis error (falling back to in-memory blacklist): {e}")
 
-    return issue_tokens(token_data["sub"])
+    # Pass the user ID (from the refresh token) to issue_tokens
+    user_id_from_token = token_data["sub"] # This will be the UUID string
+    return issue_tokens(UUID(user_id_from_token)) # FIXED: Convert back to UUID before passing

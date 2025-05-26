@@ -21,15 +21,20 @@ from .routes.messages import router as messages_router
 from .chat import router as chat_router  # Add chat router
 from .db.session import init_models
 from .ws import router as ws_router
-from .routes.chat_queue import router as chat_queue_router
+# from .routes.chat_queue import router as chat_queue_router # COMMENT OUT
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST, CollectorRegistry
 from .metrics import router as metrics_router
 from .routes.search import router as search_router
 from .routes.memory import router as memory_router
 # Use relative imports for local routes instead of absolute app imports
-from .routes import api, auth, chat_queue, memory, search, messages, persona, artifacts, files, chats
+from .routes import api, auth, memory, search, messages, persona, artifacts, files, chats # REMOVE chat_queue
 from .nats_client import GatewayNATS
 
+# Configure logging - SET TO DEBUG
+logging.basicConfig(
+    level=logging.DEBUG, # CHANGE THIS TO DEBUG
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 log = logging.getLogger("gateway.main")  # Logger for this module
 
 nats_client = GatewayNATS(os.getenv("NATS_URL", "nats://nats:4222"))  # Use env var for consistency
@@ -111,7 +116,7 @@ app.include_router(chat_router)
 app.include_router(messages.router)
 
 app.include_router(ws_router)
-app.include_router(chat_queue.router, prefix="/v1")
+# app.include_router(chat_queue.router, prefix="/v1") # COMMENT OUT
 app.include_router(search.router)
 app.include_router(memory.router)
 app.include_router(persona.router)  # Add our new persona router

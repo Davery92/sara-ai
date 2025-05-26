@@ -40,6 +40,12 @@ from nats.aio.client import Client as NATS
 import httpx
 # ────────────────────────────────────────────────────────────────────────────────
 
+# ─── Ollama endpoint & NATS subject helpers ────────────────────────────────────
+LLM_BASE_URL = os.environ["LLM_BASE_URL"].rstrip("/")
+# IMPORTANT: Use the RAW_MEMORY_SUBJECT from environment or default
+RAW_MEMORY_SUBJECT = os.getenv("RAW_MEMORY_SUBJECT", "memory.raw")
+# ────────────────────────────────────────────────────────────────────────────────
+
 # ─── Build Async DB engine & session factory ──────────────────────────────────
 DATABASE_URL = (
     f"postgresql+asyncpg://{os.environ['POSTGRES_USER']}:"
@@ -54,54 +60,60 @@ AsyncSessionLocal = sessionmaker(
 )
 # ────────────────────────────────────────────────────────────────────────────────
 
-# ─── Ollama endpoint & NATS subject helpers ────────────────────────────────────
-LLM_BASE_URL = os.environ["LLM_BASE_URL"].rstrip("/")
-from services.common.nats_helpers import session_subjects
-# use session_subjects.reply for `chat.reply.*` pattern
-# ────────────────────────────────────────────────────────────────────────────────
-
 async def handle_message(msg):
     """Callback: receive NATS msg, embed, and write to Postgres."""
     data = msg.data.decode()
     payload = json.loads(data)
-    msg_id = payload["id"]
-    text   = payload["text"]
-
+    
+    # Ensure payload contains 'id' and 'text' as expected from RAW_MEMORY_SUBJECT chunks
+    msg_id = payload.get("id")
+    text   = payload.get("text")
+    if not msg_id or not text:
+        print(f"Skipping message due to missing ID or text: {payload}")
+        return # Or log error more severely
+    
     # 1) fetch embedding from Ollama
     async with httpx.AsyncClient() as client:
         resp = await client.post(
             f"{LLM_BASE_URL}/v1/embeddings",
-            json={"model": "bge-m3", "input": text},
+            json={"model": os.getenv("EMBEDDING_MODEL", "bge-m3"), "input": text}, # Use ENV for embedding model
         )
         resp.raise_for_status()
         embedding = resp.json()["data"][0]["embedding"]
 
     # 2) write to Postgres
-        # 2) write to Postgres
-    # Ensure the table exists on first run
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # async with engine.begin() as conn: # Removed original line
+    # await conn.run_sync(Base.metadata.create_all) # Ensure table exists if not already # Removed original line
+    # The following two lines are kept from the original context, assuming `engine` and `AsyncSessionLocal` are defined elsewhere
+    # and `Base.metadata.create_all` is handled appropriately (e.g., by Alembic migrations or initial app setup).
+    # If `engine` and `AsyncSessionLocal` are indeed defined in the `... (existing code) ...` part, this is fine.
+    # However, the original `Proposed Change` in the user query didn't show where `engine` and `AsyncSessionLocal` are defined.
+    # For now, I will keep the structure close to the user's `Proposed Change`.
+    # It's assumed `Base.metadata.create_all` is managed outside this worker's `handle_message`.
 
     async with AsyncSessionLocal() as session:
-        session.add(EmbeddingMessage(text=text, embedding=embedding)) # <-- CHANGE THIS LINE
+        # Use EmbeddingMessage directly for storage, assuming room_id is chat_id
+        # The payload from RAW_MEMORY_SUBJECT should contain 'room_id'
+        room_id = payload.get("room_id")
+        if not room_id:
+            print(f"Skipping save: room_id missing in payload for msg {msg_id}")
+            return
+        
+        session.add(EmbeddingMessage(id=msg_id, room_id=room_id, content=text, embedding=embedding))
         await session.commit()
 
-    print(f"Persisted embedding for message {msg_id}")
+    print(f"Persisted embedding for message {msg_id} in room {room_id}")
 
 async def run_worker():
     # 1) connect to NATS
     nc = NATS()
     await nc.connect(servers=[os.environ.get("NATS_URL", "nats://127.0.0.1:4222")])
 
-    # 2) derive the reply subject string
-    # session_subjects() returns (session_id, request_subject, reply_subject)
-    _, _, reply_subject = session_subjects()
+    # 2) subscribe to the RAW_MEMORY_SUBJECT
+    await nc.subscribe(RAW_MEMORY_SUBJECT, cb=handle_message)
+    print(f"Subscribed to embedding subject: {RAW_MEMORY_SUBJECT}")
 
-    # 3) subscribe to that reply subject
-    await nc.subscribe(reply_subject, cb=handle_message)
-    print(f"Subscribed to reply subject: {reply_subject}")
-
-    # 4) keep the service alive
+    # 3) keep the service alive
     await asyncio.Event().wait()
 
 

@@ -121,7 +121,8 @@ services:
     volumes:
       - temporal-data:/data
     ports:
-      - "7233:7233"
+      - "7233:7233"    # gRPC communication with workers
+      - "8088:8080"    # <--- ADD THIS LINE: Maps host port 8088 to container UI port 8080
     networks: [backend]
     healthcheck:
       test: ["CMD", "tctl", "--address", "temporal:7233", "cluster", "health"]
@@ -175,18 +176,17 @@ services:
     build:
       context: ..
       dockerfile: workflows/memory_worker/Dockerfile
-    command: ["python", "-m", "worker"] 
-    depends_on:
-      redis:    { condition: service_healthy }
-      postgres: { condition: service_healthy }
-      temporal: { condition: service_started }
-    restart: unless-stopped
     environment:
       <<: *env
-      REDIS_CONV_TTL_MIN: "60"
-      HOT_MSG_LIMIT:      "200"
-      RAW_MEMORY_SUBJECT: "memory.raw"
-    networks: [backend]
+      REDIS_URL: "redis://redis:6379"
+      SENTRY_DSN: ${SENTRY_DSN}
+      SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT}
+      REDIS_CONV_TTL_MIN: "5" # Set to 5 minutes for clear observation
+    depends_on:
+      - redis
+    networks:
+      - backend
+    restart: unless-stopped
 
   # helper container for live coding / exec
   scripts:

@@ -37,6 +37,7 @@ async def stream_ws(ws: WebSocket):
         
         log.info(f"🧠 Forwarding to Ollama (model={model}) at {ollama_url}...")
         log.debug(f"Payload → {json.dumps(payload)}")
+        log.info(f"LLM Proxy sending messages array: {json.dumps(payload.get('messages'), indent=2, default=str)}")
 
         ollama_session = aiohttp.ClientSession()
         ollama_response = await ollama_session.post(

@@ -42,6 +42,7 @@ class ChatOrchestrationWorkflow:
     @workflow.run
     async def run(self, config: dict) -> None:
         self._message_history = config.get("initial_messages", [])
+        latest_user_msg_text = config.get("msg")
         self._user_id = config["user_id"]
         self._room_id = config.get("room_id", self._user_id) # Default room_id to user_id if not provided
         self._nats_reply_subject = config["nats_reply_subject"]
@@ -73,6 +74,7 @@ class ChatOrchestrationWorkflow:
             enhance_prompt_activity,
             args=[
                 self._message_history,
+                latest_user_msg_text,
                 self._user_id,
                 self._room_id,
                 self._session_auth_token,

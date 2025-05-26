@@ -14,7 +14,8 @@ log = logging.getLogger(__name__)
 
 @activity.defn
 async def enhance_prompt_activity(
-    current_messages: list[dict], 
+    current_messages: list[dict], # Historical messages, already in {"role": ..., "content": ...} format
+    latest_user_message_text: str | None, # The latest user message text
     user_id: str, 
     room_id: str, # room_id might be part of user_id or a separate concept
     auth_token: str,
@@ -28,11 +29,20 @@ async def enhance_prompt_activity(
     Takes current messages, adds system prompt with persona and memories.
     """
     activity.heartbeat()
-    log.info(f"Enhancing prompt for user_id: {user_id}, room_id: {room_id}")
+    log.info(f"Enhancing prompt for user_id: {user_id}, room_id: {room_id}. Received {len(current_messages)} historical messages. Latest user msg: '{latest_user_message_text[:100] if latest_user_message_text else "None"}...'")
 
-    user_input_msg = ""
-    if current_messages and current_messages[-1]["role"] == "user":
-        user_input_msg = current_messages[-1]["content"]
+    user_input_for_memory = ""
+    # Determine input for memory query: use latest_user_message_text if available, else last from history.
+    if latest_user_message_text:
+        user_input_for_memory = latest_user_message_text
+    elif current_messages: 
+        last_message = current_messages[-1]
+        # History items (current_messages) should now have 'content' field from gateway
+        if last_message.get("role") == "user" and last_message.get("content"):
+            user_input_for_memory = last_message.get("content", "")
+        else:
+            log.warning(f"Last user message in history was not role 'user' or had no 'content': {str(last_message)[:200]}")
+    log.info(f"Input for memory query: '{user_input_for_memory[:100]}...'")
 
     # Simplified get_persona_config
     persona_content = default_persona_content # Start with default
@@ -52,13 +62,13 @@ async def enhance_prompt_activity(
     
     # Simplified get_memories
     memories = []
-    if user_input_msg and room_id:
+    if user_input_for_memory and room_id: # Changed from user_input_msg
         try:
             headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{gateway_api_url}/v1/memory/query",
-                    json={"query": user_input_msg, "room_id": room_id, "top_n": memory_top_n},
+                    json={"query": user_input_for_memory, "room_id": room_id, "top_n": memory_top_n}, # Changed from user_input_msg
                     timeout=5.0,
                     headers=headers
                 ) as resp:
@@ -76,13 +86,23 @@ async def enhance_prompt_activity(
         memory_text = "\n\n".join([f"- {m}" for m in memories])
         system_prompt_content += f"\n\n{memory_template.format(memories=memory_text)}"
     
-    # Check if a system prompt already exists and update it, or insert one.
-    # Ensure it's the first message.
-    updated_messages = [msg for msg in current_messages if msg["role"] != "system"]
-    updated_messages.insert(0, {"role": "system", "content": system_prompt_content})
+    # current_messages (history) are already in {"role": ..., "content": ...} format from gateway.
+    # We just need to ensure they are not system messages.
+    final_llm_messages = [msg for msg in current_messages if msg.get("role") != "system" and msg.get("content") is not None]
+
+    # Add the latest user message to the list if it exists
+    if latest_user_message_text:
+        final_llm_messages.append({"role": "user", "content": latest_user_message_text})
+        log.debug(f"Appended latest user message: {latest_user_message_text[:100]}...")
+    else:
+        log.warning("No latest_user_message_text provided to enhance_prompt_activity.")
+
+    # Insert the new system prompt at the beginning
+    final_llm_messages.insert(0, {"role": "system", "content": system_prompt_content})
     
-    log.debug(f"Enhanced messages: {json.dumps(updated_messages, indent=2)}")
-    return updated_messages
+    # Log the messages being sent to LLM
+    log.debug(f"Final messages prepared for LLM ({len(final_llm_messages)} messages): {json.dumps(final_llm_messages, indent=2)}")
+    return final_llm_messages
 
 
 @activity.defn

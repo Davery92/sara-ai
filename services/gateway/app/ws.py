@@ -6,6 +6,7 @@ from services.common.nats_helpers import nats_connect, session_subjects
 from .auth import _SECRET, _ALG
 import os
 from .redis_client import get_redis
+from .redis_utils import push_unified_user_memory
 from websockets.exceptions import ConnectionClosedOK
 import httpx
 from datetime import datetime
@@ -117,32 +118,48 @@ async def stream_endpoint(ws: WebSocket):
             await ws.close(code=status.WS_1011_INTERNAL_ERROR)
             return
         
-        # ── 3 · forward assistant chunks to the browser & persist ─────
+        # ── 3 · Redis history & unified memory functions ──────────────
         r = await get_redis()
-        MAX_HISTORY = int(os.getenv("REDIS_MAX_HISTORY", "50"))
-        REDIS_TTL   = int(os.getenv("REDIS_CONV_TTL_SECONDS", "3600"))
+        MAX_HISTORY = int(os.getenv("HOT_MSG_LIMIT", "200")) # Use HOT_MSG_LIMIT for history cap
+        REDIS_TTL   = int(os.getenv("REDIS_CONV_TTL_MIN", "60")) * 60 # seconds
 
-        async def push_to_redis(role: str, text: str, user_id_for_redis: UUID, room_id_for_redis: UUID): # Use UUID for room_id
-            key = f"user:{user_id_for_redis}:room:{room_id_for_redis}:messages"
-            entry = json.dumps({"role": role, "content": text, "timestamp": datetime.utcnow().isoformat()})
+        # This function now correctly loads unified history and transforms messages for LLM
+        async def load_history(user_id_for_redis: UUID):
+            key = f"user:{str(user_id_for_redis)}:messages" # Ensure user_id is string for key
             if r:
-                await r.lpush(key, entry)
-                await r.ltrim(key, 0, MAX_HISTORY - 1)
-                await r.expire(key, REDIS_TTL)
-                log.debug(f"Pushed to Redis: {role} message for user {user_id_for_redis}, room {room_id_for_redis}")
-            else:
-                log.warning("Redis client not available in push_to_redis")
+                raw_history_items = [] # Default to empty list
+                try:
+                    raw_history_items = await r.lrange(key, 0, MAX_HISTORY - 1)
+                except Exception as e:
+                    log.error(f"Error fetching history from Redis for key {key}: {e}")
+                    return [] # Return empty on error
 
-        async def load_history(user_id_for_redis: UUID, room_id_for_redis: UUID): # Use UUID for room_id
-            key = f"user:{user_id_for_redis}:room:{room_id_for_redis}:messages"
-            if r:
-                raw_history = await r.lrange(key, 0, MAX_HISTORY - 1)
-                # FIXED: Removed .decode('utf-8') as decode_responses=True is set on Redis client
-                history = [json.loads(item) for item in reversed(raw_history)]
-                log.debug(f"[Parsed history for {key}]: {history!r}")
+                history = []
+                # raw_history_items are byte strings from Redis
+                for item_bytes in reversed(raw_history_items): 
+                    try:
+                        item = json.loads(item_bytes)
+                        
+                        # Convert 'text' field to 'content' for LLM compatibility
+                        if 'text' in item and 'role' in item:
+                            llm_message = {"role": item['role'], "content": item['text']}
+                            history.append(llm_message)
+                        # If already in desired format (e.g. if something else wrote it or future-proofing)
+                        elif 'content' in item and 'role' in item:
+                            log.debug(f"History item for user {user_id_for_redis} already in 'role'/'content' format: {item_str[:100]}...")
+                            history.append({"role": item['role'], "content": item['content']})
+                        else:
+                            log.warning(f"Skipping malformed history item for user {user_id_for_redis} (missing role/text/content): {item_str[:200]}")
+                    except json.JSONDecodeError:
+                        log.warning(f"Failed to decode JSON from Redis for user {user_id_for_redis}: {item_bytes!r}")
+                    except UnicodeDecodeError:
+                        log.warning(f"Failed to decode UTF-8 from Redis for user {user_id_for_redis}: {item_bytes!r}")
+                
+                log.debug(f"[Unified history RAW from Redis for user {user_id_for_redis} count: {len(raw_history_items)}]: {str(raw_history_items)[:300]}...")
+                log.debug(f"[Unified history PARSED for LLM for user {user_id_for_redis} count: {len(history)}]: {str(history)[:300]}...")
                 return history
             else:
-                log.warning("Redis client not available in load_history")
+                log.warning(f"Redis client not available in load_history for user {user_id_for_redis}")
                 return []
             
         # Track if we're currently receiving a streamed response
@@ -276,27 +293,41 @@ async def stream_endpoint(ws: WebSocket):
                         
                         if full_assistant_content:
                             try:
-                                # Save to PostgreSQL `messages_v2` table
+                                log.info(f"[BACKEND_WS] Attempting to save full assistant response for room {current_room_id_for_stream}, user {user_id_from_jwt}. Length: {len(full_assistant_content)}")
+                                
+                                # Prepare data for save_chat_message
+                                assistant_parts = json.dumps([{"type": "text", "text": full_assistant_content}])
+                                assistant_attachments_dict = {"model": buffered_response.get("model", "unknown_model")}
+                                # Add sources to attachments if it becomes available
+                                # assistant_attachments_dict["sources"] = ... 
+                                assistant_attachments = json.dumps(assistant_attachments_dict)
+
+                                # Save to PostgreSQL using save_chat_message
                                 await crud.save_chat_message(
                                     db=db,
                                     chat_id=current_room_id_for_stream, # This is a UUID
                                     role="assistant",
-                                    parts=json.dumps([{"type": "text", "text": full_assistant_content}]), # Store as JSON string
-                                    attachments="[]", # No attachments for text response yet
-                                    created_at=datetime.utcnow()
+                                    parts=assistant_parts,
+                                    attachments=assistant_attachments,
+                                    created_at=datetime.utcnow() # Add created_at timestamp
                                 )
-                                await db.commit() # Commit the transaction for the message
-                                log.info(f"[BACKEND_WS] Persisted complete assistant response to DB for user {user_id_from_jwt}, room {current_room_id_for_stream} (length: {len(full_assistant_content)}).")
+                                await db.commit() # Commit after successful save
+                                log.info(f"[BACKEND_WS] Saved assistant message to DB for room {current_room_id_for_stream}, user {user_id_from_jwt}")
 
-                                # Also push to Redis for hot buffer (if needed, it was already doing this)
-                                await push_to_redis("assistant", full_assistant_content, user_id_from_jwt, current_room_id_for_stream)
-                                log.info(f"[BACKEND_WS] Stored complete assistant response for user {user_id_from_jwt}, room {current_room_id_for_stream} (length: {len(full_assistant_content)}).")
+                                # Now, push to unified user memory in Redis
+                                await push_unified_user_memory(
+                                    user_id=str(user_id_from_jwt), # Ensure string UUID
+                                    room_id=str(current_room_id_for_stream), # Ensure string UUID
+                                    role="assistant",
+                                    text=full_assistant_content
+                                )
+                                log.info(f"[BACKEND_WS] Stored complete assistant response to UNIFIED Redis for user {user_id_from_jwt}.")
 
                             except Exception as db_save_error:
-                                log.error(f"[BACKEND_WS] Error saving assistant message to DB: {db_save_error}")
+                                log.error(f"[BACKEND_WS] Error saving assistant message to DB/Redis: {db_save_error}", exc_info=True)
                                 await db.rollback() # Rollback on error
                         else:
-                            log.warning("[BACKEND_WS] Assistant response content was empty, not saving.")
+                            log.warning("[BACKEND_WS] Assistant response content was empty, not saving to DB or unified Redis.")
 
                     # Clean up stream-specific state and unsubscribe
                     is_streaming = False
@@ -349,56 +380,61 @@ async def stream_endpoint(ws: WebSocket):
                 log.info(f"Current user message: '{current_user_message_text}' for room_id: {room_id_uuid}, user_id: {user_id_from_jwt}")
 
                 if current_user_message_text:
-                    # Save user message to PostgreSQL `messages_v2` table
-                    try:
-                        await crud.save_chat_message(
-                            db=db,
-                            chat_id=room_id_uuid,
-                            role="user",
-                            parts=json.dumps([{"type": "text", "text": current_user_message_text}]), # Store as JSON string
-                            attachments="[]", # Assuming no attachments in basic text message
-                            created_at=datetime.utcnow()
-                        )
-                        await db.commit() # Commit the transaction for the user message
-                        log.info(f"Persisted user message to DB for room {room_id_uuid}.")
+                    # Save user message to PostgreSQL
+                    log.info(f"[BACKEND_WS] User message received for room {room_id_uuid}, user {user_id_from_jwt}. Length: {len(current_user_message_text)}")
+                    
+                    # Prepare data for save_chat_message
+                    user_parts = json.dumps([{"type": "text", "text": current_user_message_text}])
+                    user_attachments = json.dumps({}) # No specific attachments for user message here
 
-                        # Also push to Redis hot buffer (already doing this)
-                        await push_to_redis(role="user", text=current_user_message_text, user_id_for_redis=user_id_from_jwt, room_id_for_redis=room_id_uuid)
-                        log.info(f"Stored user message to Redis for room {room_id_uuid}.")
-
-                    except Exception as db_save_error:
-                        log.error(f"Error saving user message to DB: {db_save_error}")
-                        await db.rollback() # Rollback on error
-                        await ws.send_json({"error": f"Failed to save user message: {str(db_save_error)}"})
-                        continue # Skip publishing to NATS if DB save failed
-
-                # Load history for LLM (includes the newly saved user message)
-                history_for_llm = await load_history(user_id_for_redis=user_id_from_jwt, room_id_for_redis=room_id_uuid)
-                log.debug(f"Full history for user '{user_id_from_jwt}', room '{room_id_uuid}': {history_for_llm}")
-
-                nats_payload = {
-                    "room_id": str(room_id_uuid), # Ensure it's a string for NATS payload
-                    "user_id": str(user_id_from_jwt), # Ensure it's a string for NATS payload
-                    "msg": current_user_message_text,
-                    "messages": history_for_llm,
-                    "model": client_payload.get("model"),
-                    "use_document_tools": client_payload.get("use_document_tools", True),
-                    "session_auth_token": jwt_raw,
-                }
-                
-                headers = { "Ack": ack_subj, "Reply": resp_subj, "Room-Id": str(room_id_uuid), "Auth": jwt_raw } # Ensure Auth header is present
-                
-                log.info(f"Publishing to NATS: {req_subj}. Payload: {json.dumps(nats_payload, default=str)[:200]}...")
-                try:
-                    await nc.publish(
-                        req_subj,
-                        json.dumps(nats_payload).encode(),
-                        headers=headers,
+                    await crud.save_chat_message(
+                        db=db,
+                        chat_id=room_id_uuid,
+                        role="user",
+                        parts=user_parts,
+                        attachments=user_attachments,
+                        created_at=datetime.utcnow() # Add created_at timestamp
                     )
-                    log.debug(f"Published to NATS: {req_subj}")
-                except Exception as e:
-                    log.exception(f"Failed to publish to NATS: {e}")
-                    await ws.send_json({"error": f"Failed to process request: {str(e)}"})
+                    await db.commit() # Commit after successful save
+                    log.info(f"[BACKEND_WS] Saved user message to DB for room {room_id_uuid}, user {user_id_from_jwt}")
+                    
+                    # Now, push to unified user memory in Redis
+                    await push_unified_user_memory(
+                        user_id=str(user_id_from_jwt),
+                        room_id=str(room_id_uuid),
+                        role="user",
+                        text=current_user_message_text
+                    )
+                    log.info(f"Stored user message to UNIFIED Redis for room {room_id_uuid}, user {user_id_from_jwt}.") # Adjusted log
+
+                    # Relay message to NATS for LLM processing
+                    history_for_llm = await load_history(user_id_for_redis=user_id_from_jwt) 
+                    log.debug(f"Full history for user '{user_id_from_jwt}': {history_for_llm}")
+                    nats_payload = {
+                        "room_id": str(room_id_uuid), # Ensure it's a string for NATS payload
+                        "user_id": str(user_id_from_jwt), # Ensure it's a string for NATS payload
+                        "msg": current_user_message_text,
+                        "messages": history_for_llm,      # Correctly formatted for LLM
+                        "model": client_payload.get("model"),
+                        "use_document_tools": client_payload.get("use_document_tools", True),
+                        "session_auth_token": jwt_raw,
+                    }
+                    
+                    log.debug(f"DEBUG: nats_payload['messages'] sent to NATS for user {user_id_from_jwt}, room {room_id_uuid}: {json.dumps(nats_payload['messages'], indent=2, default=str)}") # Add this line
+
+                    headers = { "Ack": ack_subj, "Reply": resp_subj, "Room-Id": str(room_id_uuid), "Auth": jwt_raw } # Ensure Auth header is present
+                    
+                    log.info(f"Publishing to NATS: {req_subj}. Payload: {json.dumps(nats_payload, default=str)[:200]}...")
+                    try:
+                        await nc.publish(
+                            req_subj,
+                            json.dumps(nats_payload).encode(),
+                            headers=headers,
+                        )
+                        log.debug(f"Published to NATS: {req_subj}")
+                    except Exception as e:
+                        log.exception(f"Failed to publish to NATS: {e}")
+                        await ws.send_json({"error": f"Failed to process request: {str(e)}"})
                 
         except WebSocketDisconnect:
             log.info(f"WS disconnected by client (user: {user_id_from_jwt})")

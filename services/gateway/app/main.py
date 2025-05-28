@@ -47,6 +47,11 @@ async def lifespan(app: FastAPI):
     await init_models()
     log.info("Database models initialized.")
 
+    from .minio_client import ensure_bucket_exists
+    MINIO_BUCKET = os.getenv("MINIO_BUCKET_NAME", "sara-uploads")
+    await ensure_bucket_exists(MINIO_BUCKET)
+    log.info(f"Ensured MinIO bucket '{MINIO_BUCKET}' exists.")
+
     try:
         log.info(f"Attempting to connect to NATS server at {nats_client.url}...")
         await nats_client.start(max_retries=10, delay=2.0)

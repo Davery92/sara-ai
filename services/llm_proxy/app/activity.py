@@ -51,6 +51,27 @@ DOCUMENT_TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "extractTextFromFile",
+            "description": "Extracts text content from an uploaded file (TXT, PDF, DOC, DOCX). Use this before answering questions about a user-uploaded file.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "object_name": { # This should be the unique path/key of the file in MinIO
+                        "type": "string",
+                        "description": "The unique identifier (pathname or key) of the file in storage."
+                    },
+                    "original_filename": { # Useful for determining file type by extension
+                        "type": "string",
+                        "description": "The original filename as uploaded by the user."
+                    }
+                },
+                "required": ["object_name", "original_filename"]
+            }
+        }
+    }
 ]
 
 @activity.defn

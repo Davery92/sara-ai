@@ -9,7 +9,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from temporalio import activity
-import json, uuid, importlib, os, httpx, logging
+import json, uuid, importlib, os, httpx, logging, hashlib
 from typing import List, Dict, Any, Optional
 
 # Set up logging
@@ -24,7 +24,7 @@ from redis_client import get_redis
 # from services.common.db_upsert import upsert_memory # Moved into upsert_summary
 
 # LLM base URL for API calls
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "http://localhost:11434").rstrip("/")
+LLM_BASE_URL = os.environ.get("LLM_PROXY_URL", "http://llm_proxy:8000").rstrip("/")
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "bge-m3")
 SUMMARY_MODEL = os.environ.get("SUMMARY_MODEL", "qwen3:32b")
 API_TIMEOUT = float(os.environ.get("API_TIMEOUT", "30.0"))
@@ -178,6 +178,8 @@ async def upsert_summary(room_id: str, summary: str, embedding: list[float]):
 async def process_rooms(user_ids_to_process: list[str]):
     log.info(f"Processing {len(user_ids_to_process)} unified user memory streams")
     for user_id in user_ids_to_process: # Iterate directly over user_ids
+        chunks = None
+        processed_successfully = False # Flag to track success before DB
         try:
             # Fetch buffer (now expects only user_id)
             chunks = await fetch_buffer(user_id) 
@@ -200,6 +202,8 @@ async def process_rooms(user_ids_to_process: list[str]):
             summary = await summarise_texts(chunks) 
             embedding = await embed_text(text) # embed_text expects concatenated string
             
+            processed_successfully = True # Mark as successful up to this point
+            
             # Upsert to database. 
             # The `memory` table needs a `user_id` column and the `room_id` might be redundant or a foreign key to a chat.
             # ASSUMPTION: For now, we will use the *first* room_id found in the chunks
@@ -218,21 +222,46 @@ async def process_rooms(user_ids_to_process: list[str]):
                 # Ensure it's a string, as room_id from chunk could be UUID object or other types
                 first_chunk_room_id = str(first_chunk_room_id)
 
+            # Validate and convert room_id to proper UUID format
+            # The database expects UUID format, but test data might have invalid UUIDs
+            try:
+                # Try to parse as UUID to validate format
+                uuid.UUID(first_chunk_room_id)
+                validated_room_id = first_chunk_room_id
+            except ValueError:
+                # If not a valid UUID, generate a deterministic UUID based on the invalid room_id
+                # This ensures consistent UUIDs for the same invalid room_id across runs
+                log.warning(f"Invalid UUID format for room_id '{first_chunk_room_id}' for user {user_id}. Generating deterministic UUID.")
+                hash_input = f"room_{first_chunk_room_id}_{user_id}".encode('utf-8')
+                hash_hex = hashlib.md5(hash_input).hexdigest()
+                # Convert hash to UUID format (8-4-4-4-12)
+                validated_room_id = f"{hash_hex[:8]}-{hash_hex[8:12]}-{hash_hex[12:16]}-{hash_hex[16:20]}-{hash_hex[20:32]}"
+                log.info(f"Generated UUID {validated_room_id} for invalid room_id '{first_chunk_room_id}'")
+
             # The `upsert_summary` function still expects a `room_id`.
             # For unified memory, this `room_id` field in the `memory` table might now store the user_id,
             # or a specific identifier indicating it's a user-level summary if the table schema is not changed.
             # If the `memory` table is altered to have a `user_id` column, `upsert_summary` needs modification.
-            # For now, we pass `first_chunk_room_id` (which could be a room_id or user_id as fallback)
-            await upsert_summary(first_chunk_room_id, summary, embedding)
-            log.info(f"Successfully upserted unified summary for user {user_id} (using identifier {first_chunk_room_id} for memory table)")
+            # For now, we pass `validated_room_id` (which is now guaranteed to be a valid UUID)
+            await upsert_summary(validated_room_id, summary, embedding)
+            log.info(f"Successfully upserted unified summary for user {user_id} (using identifier {validated_room_id} for memory table)")
 
-            # Clear the unified message buffer after successful save
-            r_del = await get_redis()
-            if r_del:
-                unified_key_to_delete = f"user:{user_id}:messages"
-                await r_del.delete(unified_key_to_delete)
-                log.info(f"Cleared unified message buffer for user {user_id} (key: {unified_key_to_delete})")
-            else:
-                log.error(f"Failed to connect to Redis to clear unified message buffer for user {user_id}")
         except Exception as e:
             log.error(f"Error processing unified memory for user {user_id}: {e}", exc_info=True)
+            # DO NOT set processed_successfully to True here
+        finally:
+            # Always try to clear the buffer if chunks were fetched,
+            # to prevent reprocessing loops if LLM is down.
+            # If processed_successfully is True, it means we got to upsert_summary (even if it failed later)
+            # If it's False, an error occurred before upsert (like LLM calls)
+            if chunks: # Only delete if chunks were fetched to avoid deleting an already cleared key
+                r_del = await get_redis()
+                if r_del:
+                    unified_key_to_delete = f"user:{user_id}:messages"
+                    await r_del.delete(unified_key_to_delete)
+                    if processed_successfully:
+                        log.info(f"Cleared unified message buffer for user {user_id} (key: {unified_key_to_delete}) after processing.")
+                    else:
+                        log.warning(f"Cleared unified message buffer for user {user_id} (key: {unified_key_to_delete}) after FAILED processing to prevent reprocessing loop.")
+                else:
+                    log.error(f"Failed to connect to Redis to clear unified message buffer for user {user_id}")

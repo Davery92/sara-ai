@@ -176,14 +176,26 @@ services:
     build:
       context: ..
       dockerfile: workflows/memory_worker/Dockerfile
+    env_file:
+      - ../.env
     environment:
       <<: *env
       REDIS_URL: "redis://redis:6379"
+      LLM_PROXY_URL: "http://llm_proxy:8000"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+      POSTGRES_DB: "${POSTGRES_DB}"
+      TEMPORAL_URL: "temporal:7233"
       SENTRY_DSN: ${SENTRY_DSN}
       SENTRY_ENVIRONMENT: ${SENTRY_ENVIRONMENT}
       REDIS_CONV_TTL_MIN: "5" # Set to 5 minutes for clear observation
     depends_on:
-      - redis
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      temporal: { condition: service_healthy }
+      llm_proxy: { condition: service_started }
     networks:
       - backend
     restart: unless-stopped
@@ -265,6 +277,11 @@ services:
       POSTGRES_DB: "${POSTGRES_DB}"
       JWT_ALG:  HS256
       JWT_SECRET: super-dev-secret-change-me
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      MINIO_BUCKET_NAME: "sara-uploads"
+      MINIO_SECURE: "False"
     depends_on:
       postgres: { condition: service_healthy }
       redis:    { condition: service_healthy }
@@ -282,6 +299,11 @@ services:
     environment:
       <<: *env
       OLLAMA_URL: "http://100.104.68.115:11434"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      MINIO_BUCKET_NAME: "sara-uploads"
+      MINIO_SECURE: "False"
     networks: [backend]
     depends_on:
       nats:     { condition: service_healthy }
@@ -294,10 +316,40 @@ services:
   llm_worker:
     build:
       context: ../services/llm_proxy
+      dockerfile: Dockerfile
     command: ["python", "worker.py"]
+    env_file: [ ../.env ]
+    environment:
+      <<: *env
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      MINIO_BUCKET_NAME: "sara-uploads"
+      MINIO_SECURE: "False"
     depends_on:
       temporal: { condition: service_healthy }
     networks: [backend]
+
+  # ─────────────────────────────── Dialogue Temporal Worker ───────────────────────────────
+  dialogue_temporal_worker:
+    container_name: sara_dialogue_temporal_worker
+    build:
+      context: ..
+      dockerfile: workflows/dialogue_worker/Dockerfile
+    env_file: [ ../.env ]
+    environment:
+      <<: *env
+      TEMPORAL_URL: "temporal:7233"
+      TEMPORAL_TASK_QUEUE: "dialogue-queue"
+      MINIO_ENDPOINT: "minio:9000"
+      MINIO_ACCESS_KEY: "${MINIO_ROOT_USER}"
+      MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD}"
+      MINIO_BUCKET_NAME: "sara-uploads"
+      MINIO_SECURE: "False"
+    depends_on:
+      temporal: { condition: service_healthy }
+    networks: [backend]
+    restart: unless-stopped
 
   frontend:
     build:

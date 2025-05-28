@@ -1,4 +1,4 @@
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 import logging
 import json
 import aiohttp
@@ -9,10 +9,76 @@ app = FastAPI(title="LLM Streaming Proxy")
 log = logging.getLogger("llm_proxy")
 logging.basicConfig(level=logging.INFO)
 
+OLLAMA_URL_INTERNAL = os.getenv("OLLAMA_URL", "http://100.104.68.115:11434")
+
 @app.get("/healthz")
 async def healthz():
     """Health check endpoint for the LLM proxy service"""
     return {"status": "ok", "message": "LLM proxy service is running"}
+
+# NEW: Endpoint for non-streaming chat completions (for summaries)
+@app.post("/v1/chat/completions")
+async def http_chat_completions(request: Request):
+    payload = await request.json()
+    log.info(f"🧠 LLM Proxy HTTP POST /v1/chat/completions for model: {payload.get('model')}")
+    log.debug(f"Payload: {json.dumps(payload)}")
+
+    # Ensure stream is explicitly false for this endpoint if not provided or if it's for summaries
+    payload["stream"] = payload.get("stream", False)  # Summaries should not stream
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                f"{OLLAMA_URL_INTERNAL}/v1/chat/completions",  # Use the internal Ollama URL
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60)  # Adjust timeout
+            ) as resp:
+                log.info(f"Ollama non-stream response status: {resp.status}")
+                response_data = await resp.json()
+                if resp.status != 200:
+                    log.error(f"Ollama error {resp.status}: {response_data}")
+                    raise HTTPException(status_code=resp.status, detail=response_data)
+                return response_data
+        except aiohttp.ClientError as e:
+            log.error(f"aiohttp.ClientError calling Ollama for completions: {e}")
+            raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {e}")
+        except HTTPException:
+            # Re-raise HTTPExceptions as-is (they already have the correct status code)
+            raise
+        except Exception as e:
+            log.error(f"Unexpected error in /v1/chat/completions: {e}")
+            raise HTTPException(status_code=500, detail=f"Internal proxy error: {e}")
+
+
+# NEW: Endpoint for embeddings
+@app.post("/v1/embeddings")
+async def http_embeddings(request: Request):
+    payload = await request.json()
+    log.info(f"🧠 LLM Proxy HTTP POST /v1/embeddings for model: {payload.get('model')}")
+    log.debug(f"Payload: {json.dumps(payload)}")
+
+    async with aiohttp.ClientSession() as session:
+        try:
+            async with session.post(
+                f"{OLLAMA_URL_INTERNAL}/v1/embeddings",  # Use the internal Ollama URL
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=30)  # Adjust timeout
+            ) as resp:
+                log.info(f"Ollama embeddings response status: {resp.status}")
+                response_data = await resp.json()
+                if resp.status != 200:
+                    log.error(f"Ollama error {resp.status}: {response_data}")
+                    raise HTTPException(status_code=resp.status, detail=response_data)
+                return response_data
+        except aiohttp.ClientError as e:
+            log.error(f"aiohttp.ClientError calling Ollama for embeddings: {e}")
+            raise HTTPException(status_code=503, detail=f"Ollama service unavailable: {e}")
+        except HTTPException:
+            # Re-raise HTTPExceptions as-is (they already have the correct status code)
+            raise
+        except Exception as e:
+            log.error(f"Unexpected error in /v1/embeddings: {e}")
+            raise HTTPException(status_code=500, detail=f"Internal proxy error: {e}")
 
 @app.websocket("/v1/stream")
 async def stream_ws(ws: WebSocket):
@@ -29,19 +95,13 @@ async def stream_ws(ws: WebSocket):
             await ws.close()
             return
 
-        raw_ollama_url_env = os.getenv("OLLAMA_URL")
-        ollama_url = raw_ollama_url_env
-        if not ollama_url:
-            ollama_url = "http://100.104.68.115:11434"
-            log.warning(f"OLLAMA_URL was not set, defaulting to: {ollama_url}")
-        
-        log.info(f"🧠 Forwarding to Ollama (model={model}) at {ollama_url}...")
+        log.info(f"🧠 Forwarding to Ollama (model={model}) at {OLLAMA_URL_INTERNAL}...")
         log.debug(f"Payload → {json.dumps(payload)}")
         log.info(f"LLM Proxy sending messages array: {json.dumps(payload.get('messages'), indent=2, default=str)}")
 
         ollama_session = aiohttp.ClientSession()
         ollama_response = await ollama_session.post(
-            f"{ollama_url}/v1/chat/completions", 
+            f"{OLLAMA_URL_INTERNAL}/v1/chat/completions", 
             json=payload, 
             timeout=aiohttp.ClientTimeout(total=180, connect=10)
         )

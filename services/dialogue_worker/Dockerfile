@@ -1,6 +1,6 @@
 FROM python:3.12-slim
 WORKDIR /app
 COPY pyproject.toml .
-RUN pip install .
+RUN pip install . 
 COPY . .
 CMD ["python", "main.py"]

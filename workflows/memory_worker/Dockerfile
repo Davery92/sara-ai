@@ -16,7 +16,22 @@ COPY services/gateway ./services/gateway
 # if you still need common helpers:
 COPY services/common   ./services/common
 
-# Install additional dependencies
-RUN pip install --no-cache-dir . PyYAML bcrypt>=4.0.1 redis
+# Install additional dependencies including PostgreSQL drivers and gateway dependencies
+RUN pip install --no-cache-dir . \
+    PyYAML \
+    bcrypt>=4.0.1 \
+    redis \
+    psycopg2-binary>=2.9.9 \
+    asyncpg>=0.29 \
+    SQLAlchemy>=2.0 \
+    minio>=7.1.0 \
+    fastapi==0.111.* \
+    pydantic==2.* \
+    httpx==0.27.* \
+    pydantic-settings==2.* \
+    PyJWT \
+    pgvector>=0.2 \
+    nats-py \
+    python-dotenv>=1.0.0
 
 CMD ["python", "-m", "worker"]

@@ -6,13 +6,14 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
-# Import activities from the same directory
-from .activities import (
+# Import activities using absolute imports
+from workflows.dialogue_worker.activities import (
     enhance_prompt_activity,
     publish_to_nats_activity,
     save_artifact_activity,
     generate_chat_title_activity, # NEW
-    update_chat_title_activity # NEW
+    update_chat_title_activity, # NEW
+    extract_text_from_file_activity # NEW
 )
 
 # Import the LLM activity from llm_proxy.
@@ -237,6 +238,30 @@ class ChatOrchestrationWorkflow:
                     update_description = function_args.get("description")
                     tool_content_for_llm = f"Tool 'updateDocument' for doc ID {doc_id_to_update} with description '{update_description}' is not fully implemented in workflow yet."
                     log.warning(tool_content_for_llm)
+                elif function_name == "extractTextFromFile":
+                    object_name_arg = function_args.get("object_name")
+                    original_filename_arg = function_args.get("original_filename")
+                    if object_name_arg and original_filename_arg:
+                        try:
+                            # Ensure the activity name matches what's registered in the worker
+                            # This activity should be registered in the llm_proxy worker if it needs MinIO access directly
+                            # OR registered in dialogue_worker and llm_proxy calls it via some mechanism (e.g. NATS, or direct gRPC if feasible)
+                            # For now, assuming it's registered with a worker that this workflow can call.
+                            extracted_text = await workflow.execute_activity(
+                                extract_text_from_file_activity, 
+                                args=[object_name_arg, original_filename_arg],
+                                start_to_close_timeout=timedelta(seconds=60) 
+                            )
+                            tool_content_for_llm = f"Extracted text from '{original_filename_arg}':\n{extracted_text[:1500]}..." 
+                            if len(extracted_text) > 1500:
+                                 tool_content_for_llm += "\n[Note: Content truncated for brevity]"
+                            log.info(f"Text extraction successful for {original_filename_arg}.")
+                        except Exception as e:
+                            log.error(f"Error extracting text from {original_filename_arg}: {e}")
+                            tool_content_for_llm = f"[Error extracting text from file '{original_filename_arg}': {str(e)}]"
+                    else:
+                        log.error("Missing object_name or original_filename for extractTextFromFile tool call.")
+                        tool_content_for_llm = "[Error: Missing file identifier for text extraction]"
                 else:
                     tool_content_for_llm = f"Unknown tool: {function_name}"
                     log.warning(tool_content_for_llm)

@@ -1,6 +1,7 @@
 'use client';
 
 import type { Attachment, UIMessage } from 'ai';
+import type { ExtendedAttachment } from '@/lib/types';
 import cx from 'classnames';
 import type React from 'react';
 import {
@@ -52,8 +53,8 @@ function PureMultimodalInput({
   setInput: (value: string) => void;
   status: UseChatHelpers['status'];
   stop: () => void;
-  attachments: Array<Attachment>;
-  setAttachments: Dispatch<SetStateAction<Array<Attachment>>>;
+  attachments: Array<ExtendedAttachment>;
+  setAttachments: Dispatch<SetStateAction<Array<ExtendedAttachment>>>;
   messages: Array<UIMessage>;
   setMessages: Dispatch<SetStateAction<UIMessage[]>>;
   append: (message: UIMessage | Omit<UIMessage, 'id' | 'createdAt'>, options?: CustomChatRequestOptions) => Promise<string | null | undefined>;
@@ -134,7 +135,8 @@ function PureMultimodalInput({
     chatId,
   ]);
 
-  const uploadFile = useCallback(async (file: File) => {
+  const uploadFile = useCallback(async (file: File): Promise<ExtendedAttachment | undefined> => {
+    console.log('UPLOAD_FILE: NEXT_PUBLIC_BACKEND_API_URL is:', process.env.NEXT_PUBLIC_BACKEND_API_URL);
     const formData = new FormData();
     formData.append('file', file);
 
@@ -146,13 +148,29 @@ function PureMultimodalInput({
 
       if (response.ok) {
         const data = await response.json();
-        const { url, pathname, contentType } = data;
+        const { url, pathname, contentType, extracted_text, original_filename, object_name } = data;
 
-        return {
+        const attachment: ExtendedAttachment = {
           url,
           name: pathname,
           contentType: contentType,
         };
+
+        // Include extracted_text if available for text-based files
+        if (extracted_text) {
+          console.log(`UPLOAD_FILE: Including extracted_text (${extracted_text.length} characters) for file ${original_filename}`);
+          attachment.extracted_text = extracted_text;
+        }
+
+        // Include additional metadata for backend processing
+        if (original_filename) {
+          attachment.original_filename = original_filename;
+        }
+        if (object_name) {
+          attachment.object_name = object_name;
+        }
+
+        return attachment;
       }
       const { error } = await response.json();
       toast.error(error);

@@ -17,7 +17,6 @@ from workflows.dialogue_worker.activities import (
     save_artifact_activity,
     generate_chat_title_activity,
     update_chat_title_activity,
-    extract_text_from_file_activity
 )
 from services.llm_proxy.app.activity import call_ollama_with_tool_support
 
@@ -39,7 +38,6 @@ async def main():
             save_artifact_activity,
             generate_chat_title_activity,
             update_chat_title_activity,
-            extract_text_from_file_activity,
             call_ollama_with_tool_support
         ],
     )

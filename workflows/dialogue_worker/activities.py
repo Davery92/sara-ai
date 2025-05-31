@@ -14,28 +14,24 @@ log = logging.getLogger(__name__)
 
 @activity.defn
 async def enhance_prompt_activity(
-    current_messages: list[dict], # Historical messages, already in {"role": ..., "content": ...} format
-    latest_user_message_text: str | None, # The latest user message text
+    current_messages: list[dict], # Historical messages
+    latest_user_message_text: str | None, # User's typed text for the current turn
     user_id: str, 
-    room_id: str, # room_id might be part of user_id or a separate concept
+    room_id: str,
     auth_token: str,
-    gateway_api_url: str, # e.g. http://gateway:8000
+    gateway_api_url: str,
     default_persona_content: str,
     memory_template: str,
-    memory_top_n: int
+    memory_top_n: int,
+    extracted_file_content: str | None = None,    # <<< NEW: Content from file
+    attachments_metadata: list | None = None       # <<< NEW: Original attachment metadata
 ) -> list[dict]:
-    """
-    Adapts prompt enhancement logic.
-    Takes current messages, adds system prompt with persona and memories.
-    """
     activity.heartbeat()
-    log.info(f"Enhancing prompt for user_id: {user_id}, room_id: {room_id}. Received {len(current_messages)} historical messages. Latest user msg: '{latest_user_message_text[:100] if latest_user_message_text else "None"}...'")
+    log.info(f"Enhancing prompt. User: {user_id}, Room: {room_id}. Has extracted_file_content: {bool(extracted_file_content)}")
 
-    user_input_for_memory = ""
     # Determine input for memory query: use latest_user_message_text if available, else last from history.
-    if latest_user_message_text:
-        user_input_for_memory = latest_user_message_text
-    elif current_messages: 
+    user_input_for_memory = latest_user_message_text if latest_user_message_text else ""
+    if not user_input_for_memory and current_messages: 
         last_message = current_messages[-1]
         # History items (current_messages) should now have 'content' field from gateway
         if last_message.get("role") == "user" and last_message.get("content"):
@@ -62,13 +58,13 @@ async def enhance_prompt_activity(
     
     # Simplified get_memories
     memories = []
-    if user_input_for_memory and room_id: # Changed from user_input_msg
+    if user_input_for_memory and room_id:
         try:
             headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{gateway_api_url}/v1/memory/query",
-                    json={"query": user_input_for_memory, "room_id": room_id, "top_n": memory_top_n}, # Changed from user_input_msg
+                    json={"query": user_input_for_memory, "room_id": room_id, "top_n": memory_top_n},
                     timeout=5.0,
                     headers=headers
                 ) as resp:
@@ -86,22 +82,72 @@ async def enhance_prompt_activity(
         memory_text = "\n\n".join([f"- {m}" for m in memories])
         system_prompt_content += f"\n\n{memory_template.format(memories=memory_text)}"
     
-    # current_messages (history) are already in {"role": ..., "content": ...} format from gateway.
-    # We just need to ensure they are not system messages.
+    # Prepare the list of messages for the LLM
+    # Start with historical messages (already in {"role": ..., "content": ...} format)
+    # Ensure history does not include any prior system messages if this one is meant to be the definitive one
     final_llm_messages = [msg for msg in current_messages if msg.get("role") != "system" and msg.get("content") is not None]
 
-    # Add the latest user message to the list if it exists
-    if latest_user_message_text:
-        final_llm_messages.append({"role": "user", "content": latest_user_message_text})
-        log.debug(f"Appended latest user message: {latest_user_message_text[:100]}...")
-    else:
-        log.warning("No latest_user_message_text provided to enhance_prompt_activity.")
+    # Construct the LATEST user message for this turn
+    latest_user_turn_content_parts = []
 
-    # Insert the new system prompt at the beginning
+    # 1. If there's extracted file content, inject it into the user's message
+    if extracted_file_content and attachments_metadata:
+        # Get the original filename from the first attachment
+        original_filename = attachments_metadata[0].get("original_filename", "uploaded_file")
+        
+        # First, add the user's typed message if it exists
+        if latest_user_message_text:
+            latest_user_turn_content_parts.append({"type": "text", "text": latest_user_message_text})
+        
+        # Then add the document content as context for their question
+        file_context_text = f"""
+
+ATTACHED DOCUMENT: '{original_filename}'
+================================================================================
+{extracted_file_content}
+================================================================================
+
+Based on the above document content, please respond to my question."""
+        
+        latest_user_turn_content_parts.append({"type": "text", "text": file_context_text})
+        log.info(f"Added extracted content from '{original_filename}' to user prompt.")
+        log.info(f"File content being injected - Length: {len(extracted_file_content)} characters")
+        log.info(f"File content preview: {extracted_file_content[:200]}...")
+        log.info(f"Complete file context text length: {len(file_context_text)} characters")
+    else:
+        # 2. Add the user's typed text message (if no file content)
+        if latest_user_message_text:
+            latest_user_turn_content_parts.append({"type": "text", "text": latest_user_message_text})
+    
+    # Add the constructed latest user message to the list for LLM
+    # Only add if there's some content (either file or text)
+    if latest_user_turn_content_parts:
+        final_llm_messages.append({"role": "user", "content": latest_user_turn_content_parts})
+    elif not final_llm_messages: # If history is also empty and no user input
+        log.warning("No user message and no history, sending a placeholder user message.")
+        final_llm_messages.append({"role": "user", "content": [{"type": "text", "text": "Hello."}]})
+
+    # Prepend the definitive system prompt
     final_llm_messages.insert(0, {"role": "system", "content": system_prompt_content})
     
-    # Log the messages being sent to LLM
-    log.debug(f"Final messages prepared for LLM ({len(final_llm_messages)} messages): {json.dumps(final_llm_messages, indent=2)}")
+    log.info(f"Final LLM message structure prepared:")
+    log.info(f"  - Total messages: {len(final_llm_messages)}")
+    log.info(f"  - System prompt length: {len(system_prompt_content)} characters")
+    
+    # Log user message details
+    user_messages = [msg for msg in final_llm_messages if msg.get("role") == "user"]
+    if user_messages:
+        latest_user_msg = user_messages[-1]
+        if isinstance(latest_user_msg.get("content"), list):
+            log.info(f"  - Latest user message has {len(latest_user_msg['content'])} content parts")
+            for i, part in enumerate(latest_user_msg["content"]):
+                if part.get("type") == "text":
+                    text_content = part.get("text", "")
+                    log.info(f"    Part {i+1}: {len(text_content)} characters - '{text_content[:100]}...'")
+        else:
+            log.info(f"  - Latest user message: {len(str(latest_user_msg.get('content', '')))} characters")
+    
+    log.debug(f"Final messages for LLM after enhance_prompt_activity: {json.dumps(final_llm_messages, indent=2, default=str)}")
     return final_llm_messages
 
 
@@ -344,6 +390,10 @@ async def extract_text_from_file_activity(object_name: str, original_filename: s
         log.warning(f"No text could be extracted from {original_filename} (type: {ext}). It might be empty or an image-based file.")
         extracted_text = "[No text content found in file]"
 
-    log.info(f"Extracted text from {original_filename} (first 100 chars): {extracted_text[:100].replace('\n', ' ')}...")
+    log.info(f"Successfully extracted text from {original_filename} (type: {ext})")
+    log.info(f"Extracted text length: {len(extracted_text)} characters")
+    log.info(f"First 200 characters: {extracted_text[:200].replace(chr(10), ' ').replace(chr(13), ' ')}")
+    log.info(f"Last 200 characters: {extracted_text[-200:].replace(chr(10), ' ').replace(chr(13), ' ')}")
+    
     return extracted_text
 

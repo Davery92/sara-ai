@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "sara-ai"
+version = "0.1.0"
+description = "Sara AI Assistant with Temporal Workflows"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Core dependencies
+    "temporalio>=1.0.0",
+    "aiohttp>=3.8.0",
+    
+    # File processing dependencies
+    "minio>=7.0.0",
+    "pypdf2>=3.0.0",
+    "python-docx>=0.8.11",
+    
+    # NATS messaging
+    "nats-py>=2.0.0",
+    
+    # Standard library modules (json, logging, os, io, asyncio, uuid) are built-in
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.21.0",
+    "black>=23.0.0",
+    "flake8>=6.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["workflows*", "services*", "configs*"]
+
+[tool.black]
+line-length = 120
+target-version = ['py312']
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"] 

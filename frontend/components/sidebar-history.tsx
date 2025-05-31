@@ -89,7 +89,7 @@ export const getChatHistoryKey: SWRInfiniteKeyLoader<Chat[]> = (
   previousPageData: Chat[] | null,
 ) => {
   if (pageIndex === 0 && (!previousPageData || previousPageData.length === 0)) {
-    return '/v1/chats'; // Endpoint to fetch all chats for the user
+    return '/api/chats'; // Endpoint to fetch all chats for the user
   }
   return null; // No more pages if not index 0 or if previous page had data (implying all fetched)
 };
@@ -108,8 +108,11 @@ export function SidebarHistory() { // Removed user prop
     mutate,
     error,
   } = useSWRInfinite<Chat[]>(
-    isAuthenticated ? getChatHistoryKey : null, // Only fetch if authenticated
+    getChatHistoryKey, // Always provide the key function
     async (url: string) => {
+      if (!isAuthenticated) {
+        throw new Error('Not authenticated');
+      }
       const res = await authenticatedFetch(url);
       if (!res.ok) {
         const errorData = await res.json().catch(() => ({ message: 'Failed to fetch chat history' }));
@@ -121,6 +124,8 @@ export function SidebarHistory() { // Removed user prop
       revalidateIfStale: true,
       revalidateOnFocus: true,
       revalidateOnReconnect: true,
+      // Only fetch if authenticated
+      isPaused: () => !isAuthenticated,
       // fallbackData: [], // Initial data can be empty or handled by loading/empty states
     }
   );

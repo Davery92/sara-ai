@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { UIMessage } from 'ai';
+import type { ExtendedAttachment } from '@/lib/types';
 import { generateUUID } from '@/lib/utils';
 import { useWebSocket as useWebSocketContextRoot, WebSocketStatus, WS_MESSAGE_EVENT } from '@/context/websocket-context';
 import { useAuth } from '@/context/auth-context';
@@ -20,7 +21,7 @@ export interface ChatWebSocketReturnType {
   messages: UIMessage[];
   setMessages: React.Dispatch<React.SetStateAction<UIMessage[]>>;
   wsStatus: WebSocketStatus;
-  sendMessage: (messageText: string, messageModelId?: string) => void;
+  sendMessage: (messageText: string, messageModelId?: string, attachments?: ExtendedAttachment[]) => void;
 }
 
 export function useChatWebSocket({
@@ -94,7 +95,7 @@ export function useChatWebSocket({
 
   const currentAssistantMessageIdRef = useRef<string | null>(null);
 
-  const sendMessage = useCallback((messageText: string, messageModelId?: string): void => {
+  const sendMessage = useCallback((messageText: string, messageModelId?: string, attachments?: ExtendedAttachment[]): void => {
     if (!messageText.trim()) return;
     console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] sendMessage called: "${messageText.substring(0,30)}..."`);
 
@@ -114,7 +115,33 @@ export function useChatWebSocket({
     currentAssistantMessageIdRef.current = generateUUID(); // Generate new ID for expected assistant response
     console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] Set currentAssistantMessageIdRef: ${currentAssistantMessageIdRef.current} before sending.`);
     
-    const payload = { room_id: chatId, msg: messageText, model: messageModelId || modelId };
+    const payload: any = {
+      room_id: chatId,
+      msg: messageText,
+      model: messageModelId || modelId,
+    };
+
+    if (attachments && attachments.length > 0) {
+      payload.attachments = attachments.map(att => ({
+        object_name: att.object_name || att.name, // Use object_name if available, fallback to name
+        original_filename: att.original_filename || att.name, // Use original_filename if available, fallback to name
+        content_type: att.contentType,
+        extracted_text: att.extracted_text, // Include extracted_text if available
+        // url: att.url, // Backend might not need the client-side URL
+      }));
+      
+      // Log extracted text inclusion for debugging
+      attachments.forEach((att, index) => {
+        const extractedText = att.extracted_text;
+        if (extractedText) {
+          console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] Attachment ${index + 1} includes extracted_text (${extractedText.length} characters)`);
+        } else {
+          console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] Attachment ${index + 1} has no extracted_text`);
+        }
+      });
+    }
+    console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] Sending payload with attachments:`, payload);
+    console.log(`[WS_HOOK ${hookInstanceId.current} for ${chatId}] Final payload to WebSocket:`, JSON.stringify(payload, null, 2));
     sendRawWsMessageViaContext(payload);
   }, [chatId, modelId, onError, sendRawWsMessageViaContext, wsInstance, connectViaContext, currentChatIdFromContext, contextWsStatus, isAuthenticated]);
 

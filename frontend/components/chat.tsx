@@ -1,6 +1,6 @@
 'use client';
 
-import type { Attachment, UIMessage } from 'ai';
+import type { UIMessage } from 'ai';
 import type { UseChatHelpers } from '@ai-sdk/react';
 import { useEffect, useState, useCallback } from 'react';
 import { ChatHeader } from '@/components/chat-header';
@@ -16,6 +16,7 @@ import { useChatVisibility } from '@/hooks/use-chat-visibility';
 import { useChatWebSocket } from '@/hooks/use-chat-websocket-context';
 import { createContext } from 'react';
 import { WebSocketStatus } from '@/context/websocket-context';
+import type { ExtendedAttachment } from '@/lib/types';
 
 // Create a context for sharing the latest document ID across components
 export const LatestArtifactContext = createContext<{
@@ -87,21 +88,26 @@ export function Chat({
   
   const messagesToDisplay = wsMessages;
 
+  const [attachments, setAttachments] = useState<Array<ExtendedAttachment>>([]);
+  
   const handleSubmit = useCallback((e?: React.FormEvent<HTMLFormElement>, chatRequestOptions?: CustomChatRequestOptions) => {
     if (e) e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && attachments.length === 0) return;
 
     const userMessage: UIMessage = {
       id: generateUUID(),
       role: 'user',
       content: input,
       parts: [{ type: 'text', text: input }],
+      experimental_attachments: attachments,
       createdAt: new Date(),
     };
     setWsMessages((prevMessages) => [...(prevMessages || []), userMessage]);
-    sendMessage(input, currentModelId);
+
+    sendMessage(input, currentModelId, attachments);
     setInput('');
-  }, [input, currentModelId, sendMessage, setWsMessages, id, setInput]);
+    setAttachments([]);
+  }, [input, currentModelId, attachments, sendMessage, setWsMessages, setInput, setAttachments]);
 
   const append = useCallback(async (message: UIMessage | Omit<UIMessage, 'id' | 'createdAt'>, chatRequestOptions?: CustomChatRequestOptions): Promise<string | null | undefined> => { 
     const fullMessage: UIMessage = {
@@ -170,7 +176,6 @@ export function Chat({
     }
   }, [query, append, hasAppendedQuery, id]);
 
-  const [attachments, setAttachments] = useState<Array<Attachment>>([]);
   const isArtifactVisible = useArtifactSelector((state) => state.isVisible);
   const stop = () => {
     console.log('Stop function called - WS handling TBD, for now setting UI to idle');

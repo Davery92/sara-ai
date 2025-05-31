@@ -25,7 +25,7 @@ async def main():
             MemoryRollupWorkflow.run,
             id="memory-rollup-cron",
             task_queue="memory-rollup",
-            cron_schedule="*/30 * * * *",
+            cron_schedule="*/60 * * * *",
             id_reuse_policy=WorkflowIDReusePolicy.ALLOW_DUPLICATE
         )
         print("✅ Started memory-rollup-cron workflow")

@@ -2,7 +2,11 @@
 name = "sara-gateway"
 version = "0.0.0"
 description = "FastAPI edge service for Sara"
-dependencies = []          # runtime deps already baked into the Docker image
+dependencies = [
+    # Text extraction dependencies for immediate file processing
+    "pypdf2>=3.0.0",
+    "python-docx>=0.8.11",
+]
 requires-python = ">=3.12"
 
 [build-system]

@@ -50,27 +50,6 @@ DOCUMENT_TOOLS = [
                 "required": ["document_id", "description"],
             },
         },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "extractTextFromFile",
-            "description": "Extracts text content from an uploaded file (TXT, PDF, DOC, DOCX). Use this before answering questions about a user-uploaded file.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "object_name": { # This should be the unique path/key of the file in MinIO
-                        "type": "string",
-                        "description": "The unique identifier (pathname or key) of the file in storage."
-                    },
-                    "original_filename": { # Useful for determining file type by extension
-                        "type": "string",
-                        "description": "The original filename as uploaded by the user."
-                    }
-                },
-                "required": ["object_name", "original_filename"]
-            }
-        }
     }
 ]
 
@@ -154,6 +133,13 @@ async def call_ollama_with_tool_support(
         "finish_reason": str | None (e.g., "stop", "tool_calls")
     }
     """
+    log.info(f"[LLM_PROXY_ACTIVITY] Received messages for Ollama call (count: {len(messages)}):")
+    for i, msg in enumerate(messages):
+        log.info(f"[LLM_PROXY_ACTIVITY] LLM Message [{i}] Role: {msg.get('role')}, Content Preview: {str(msg.get('content'))[:200]}...")
+        if isinstance(msg.get('content'), list):
+            for j, part in enumerate(msg.get('content')):
+                 log.info(f"[LLM_PROXY_ACTIVITY]   Part [{j}] Type: {part.get('type')}, Text Preview: {str(part.get('text'))[:150]}...")
+    
     base = os.getenv("OLLAMA_URL")
     if not base:
         log.error("OLLAMA_URL environment variable is not set for call_ollama_with_tool_support activity!")

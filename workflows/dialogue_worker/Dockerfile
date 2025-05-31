@@ -5,15 +5,9 @@ WORKDIR /app
 # Copy the entire project
 COPY . .
 
-# Install Python dependencies
-# First install any pyproject.toml if it exists at the root
-RUN if [ -f pyproject.toml ]; then pip install .; fi
-
-# Install dialogue worker specific requirements
-RUN if [ -f services/dialogue_worker/requirements.txt ]; then pip install -r services/dialogue_worker/requirements.txt; fi
-
-# Install any additional requirements for temporal/workflow dependencies
-RUN pip install temporalio
+# Install Python dependencies from root pyproject.toml
+# This includes temporalio, aiohttp, minio, pypdf2, python-docx, nats-py
+RUN pip install .
 
 # Set Python path to include the project root
 ENV PYTHONPATH=/app

@@ -1,4 +1,4 @@
-import type { Attachment } from 'ai';
+import type { ExtendedAttachment } from '@/lib/types';
 
 import { LoaderIcon } from './icons';
 
@@ -6,7 +6,7 @@ export const PreviewAttachment = ({
   attachment,
   isUploading = false,
 }: {
-  attachment: Attachment;
+  attachment: ExtendedAttachment;
   isUploading?: boolean;
 }) => {
   const { name, url, contentType } = attachment;

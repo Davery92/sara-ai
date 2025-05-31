@@ -15,13 +15,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from .db.session import get_session
 from .db import crud
 from uuid import UUID
-# from asyncio import anext # Removed this line as anext is a built-in function
+from temporalio.client import Client as TemporalClient
+import asyncio
 
 router = APIRouter()
 log = logging.getLogger("gateway.ws")
 
 # Get Ollama base URL from environment
 LLM_BASE_URL = os.getenv("LLM_BASE_URL", "http://localhost:11434")
+
+# Temporal configuration
+TEMPORAL_URL = os.getenv("TEMPORAL_URL", "temporal:7233")
+TEMPORAL_TASK_QUEUE = "dialogue-queue"
 
 
 @router.get("/v1/models/available")
@@ -104,10 +109,10 @@ async def stream_endpoint(ws: WebSocket):
             await ws.close(code=status.WS_1008_POLICY_VIOLATION)
             return
     
-        # ── 1 · per-session NATS subjects ─────────────────────────────
+        # ── 1 · per-CONNECTION NATS subjects (FIXED: moved outside message loop) ─────────────────────────────
         session_id, req_subj, resp_subj = session_subjects()
         ack_subj = f"ack.{session_id}"
-        log.info("Using NATS ack subject: %s, reply subject: %s", ack_subj, resp_subj)
+        log.info("Using NATS session_id: %s, ack subject: %s, reply subject: %s", session_id, ack_subj, resp_subj)
         
         # ── 2 · NATS connection ───────────────────────────────────────
         try:
@@ -183,7 +188,12 @@ async def stream_endpoint(ws: WebSocket):
             if isinstance(room_id_from_header, bytes):
                 room_id_from_header = room_id_from_header.decode('utf-8') # Ensure header is decoded
 
-            room_id_uuid_from_header = UUID(room_id_from_header) # Convert to UUID
+            # Safely convert to UUID with error handling
+            try:
+                room_id_uuid_from_header = UUID(room_id_from_header) # Convert to UUID
+            except (ValueError, TypeError) as e:
+                log.warning(f"[BACKEND_WS] Invalid Room-Id header format: '{room_id_from_header}'. Error: {e}. Ignoring message.")
+                return # Skip processing this message
             
             payload_json = None
             delta_content = None # Initialize content and finish_reason to None
@@ -193,17 +203,40 @@ async def stream_endpoint(ws: WebSocket):
             # 2. Attempt to parse JSON and extract structured data
             try:
                 payload_json = json.loads(raw_nats_message)
-                choices = payload_json.get("choices", [])
-                if choices and isinstance(choices, list) and len(choices) > 0:
-                     choice = choices[0]
-                     delta = choice.get("delta", {})
-                     if isinstance(delta, dict):
-                        delta_content = delta.get("content", None)
-                     finish_reason = choice.get("finish_reason", None)
-                is_done = payload_json.get("done", False) # Check for top-level done flag
+                
+                # Handle new workflow format: {"type": "chat_chunk", "payload": {"delta_content": "text"}}
+                if payload_json.get("type") == "chat_chunk":
+                    delta_content = payload_json.get("payload", {}).get("delta_content", None)
+                    finish_reason = None  # Chat chunks don't have finish_reason
+                    is_done = False
+                    log.debug(f"[BACKEND_WS] Processing workflow chat_chunk with delta_content: {delta_content[:100] if delta_content else 'None'}...")
+                
+                # Handle workflow finish signal: {"type": "chat_finish", "payload": {"finish_reason": "stop"}}
+                elif payload_json.get("type") == "chat_finish":
+                    delta_content = None
+                    finish_reason = payload_json.get("payload", {}).get("finish_reason", "stop")
+                    is_done = True
+                    log.debug(f"[BACKEND_WS] Processing workflow chat_finish with finish_reason: {finish_reason}")
+                
+                # Handle old format: {"choices": [{"delta": {"content": "text"}}]}
+                else:
+                    choices = payload_json.get("choices", [])
+                    if choices and isinstance(choices, list) and len(choices) > 0:
+                         choice = choices[0]
+                         delta = choice.get("delta", {})
+                         if isinstance(delta, dict):
+                            delta_content = delta.get("content", None)
+                         finish_reason = choice.get("finish_reason", None)
+                    else:
+                        delta_content = None
+                        finish_reason = None
+                    is_done = payload_json.get("done", False) # Check for top-level done flag
 
             except json.JSONDecodeError:
                 log.debug("[BACKEND_WS] Received non-JSON chunk. Could be [DONE] or artifact.")
+                delta_content = None
+                finish_reason = None
+                is_done = False
                 pass # Continue processing based on raw_nats_message
                 
             # 3. State Management and Processing Logic
@@ -236,6 +269,17 @@ async def stream_endpoint(ws: WebSocket):
                             buffered_response["choices"][0]["delta"]["content"] += content_to_add
                         else: # Re-initialize if structure lost
                             buffered_response = {"choices": [{"delta": {"content": content_to_add}}]}
+                elif payload_json and payload_json.get("type") == "chat_chunk":
+                    # For workflow format chunks
+                    content_to_add = payload_json.get("payload", {}).get("delta_content", "")
+                    if content_to_add is not None:
+                        # Append content to the buffered response
+                        if "choices" in buffered_response and buffered_response["choices"] and "delta" in buffered_response["choices"][0]:
+                            if "content" not in buffered_response["choices"][0]["delta"]:
+                                buffered_response["choices"][0]["delta"]["content"] = ""
+                            buffered_response["choices"][0]["delta"]["content"] += content_to_add
+                        else: # Re-initialize if structure lost
+                            buffered_response = {"choices": [{"delta": {"content": content_to_add}}]}
                 elif not payload_json and raw_nats_message.strip() and raw_nats_message.strip() != "[DONE]":
                     # For non-JSON chunks (like raw text from a custom stream or artifact content)
                     raw_content = raw_nats_message
@@ -254,32 +298,77 @@ async def stream_endpoint(ws: WebSocket):
 
 
                 # --- Sending to WebSocket ---
-                # Always send the raw message received from NATS to the WebSocket if it's part of the active stream.
-                log.debug(f"[BACKEND_WS] Sending to WebSocket (room: {current_room_id_for_stream}): {raw_nats_message[:200]}...")
-                try:
-                    await ws.send_text(raw_nats_message)
-                except ConnectionClosedOK:
-                    log.info("[BACKEND_WS] Client socket closed during _on_reply send, unsubscribing.")
-                    if sub and hasattr(sub, '_closed') and not sub._closed:
-                         try: await sub.unsubscribe()
-                         except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on WS close: {unsub_error}")
-                    sub = None
-                    is_streaming = False # Also reset streaming state
-                    current_room_id_for_stream = None
-                    buffered_response = None
-                    return # Stop processing this stream
-                except Exception as send_exc:
-                    log.error(f"[BACKEND_WS] Error sending to WebSocket client: {send_exc}. Unsubscribing.")
-                    if sub and hasattr(sub, '_closed') and not sub._closed:
-                        try: await sub.unsubscribe()
-                        except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on send error: {unsub_error}")
-                    sub = None
-                    is_streaming = False # Also reset streaming state
-                    current_room_id_for_stream = None
-                    buffered_response = None
-                    try: await ws.send_json({"error": f"Gateway send error: {str(send_exc)[:100]}..."})
-                    except: pass
-                    return
+                # Convert workflow format to frontend-expected format and send
+                if payload_json and payload_json.get("type") in ["chat_chunk", "chat_finish"]:
+                    # Convert workflow format to Ollama-style format for frontend
+                    if payload_json.get("type") == "chat_chunk":
+                        delta_content_to_send = payload_json.get("payload", {}).get("delta_content", "")
+                        frontend_message = {
+                            "choices": [{"delta": {"content": delta_content_to_send}}],
+                            "model": "workflow-response"
+                        }
+                    elif payload_json.get("type") == "chat_finish":
+                        finish_reason_to_send = payload_json.get("payload", {}).get("finish_reason", "stop")
+                        frontend_message = {
+                            "choices": [{"finish_reason": finish_reason_to_send, "delta": {}}],
+                            "done": True,
+                            "model": "workflow-response"
+                        }
+                    
+                    frontend_message_str = json.dumps(frontend_message)
+                    log.debug(f"[BACKEND_WS] Sending converted message to WebSocket (room: {current_room_id_for_stream}): {frontend_message_str[:200]}...")
+                    
+                    try:
+                        await ws.send_text(frontend_message_str)
+                    except ConnectionClosedOK:
+                        log.info("[BACKEND_WS] Client socket closed during _on_reply send, unsubscribing.")
+                        if sub and hasattr(sub, '_closed') and not sub._closed:
+                             try: await sub.unsubscribe()
+                             except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on WS close: {unsub_error}")
+                        sub = None
+                        is_streaming = False
+                        current_room_id_for_stream = None
+                        buffered_response = None
+                        return
+                    except Exception as send_exc:
+                        log.error(f"[BACKEND_WS] Error sending to WebSocket client: {send_exc}. Unsubscribing.")
+                        if sub and hasattr(sub, '_closed') and not sub._closed:
+                            try: await sub.unsubscribe()
+                            except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on send error: {unsub_error}")
+                        sub = None
+                        is_streaming = False
+                        current_room_id_for_stream = None
+                        buffered_response = None
+                        try: await ws.send_json({"error": f"Gateway send error: {str(send_exc)[:100]}..."})
+                        except: pass
+                        return
+                else:
+                    # For old format or non-JSON messages, send as-is
+                    log.debug(f"[BACKEND_WS] Sending raw message to WebSocket (room: {current_room_id_for_stream}): {raw_nats_message[:200]}...")
+                    try:
+                        await ws.send_text(raw_nats_message)
+                    except ConnectionClosedOK:
+                        log.info("[BACKEND_WS] Client socket closed during _on_reply send, unsubscribing.")
+                        if sub and hasattr(sub, '_closed') and not sub._closed:
+                             try: await sub.unsubscribe()
+                             except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on WS close: {unsub_error}")
+                        sub = None
+                        is_streaming = False # Also reset streaming state
+                        current_room_id_for_stream = None
+                        buffered_response = None
+                        return # Stop processing this stream
+                    except Exception as send_exc:
+                        log.error(f"[BACKEND_WS] Error sending to WebSocket client: {send_exc}. Unsubscribing.")
+                        if sub and hasattr(sub, '_closed') and not sub._closed:
+                            try: await sub.unsubscribe()
+                            except Exception as unsub_error: log.error(f"[BACKEND_WS] Error during unsubscribe on send error: {unsub_error}")
+                        sub = None
+                        is_streaming = False # Also reset streaming state
+                        current_room_id_for_stream = None
+                        buffered_response = None
+                        try: await ws.send_json({"error": f"Gateway send error: {str(send_exc)[:100]}..."})
+                        except: pass
+                        return
 
                 # --- Stream Completion Check ---
                 is_stream_end_signal = (finish_reason == "stop" or is_done or raw_nats_message.strip() == "[DONE]")
@@ -357,6 +446,7 @@ async def stream_endpoint(ws: WebSocket):
                 
                 try:
                     client_payload = json.loads(raw_client_message)
+                    log.info(f"[GATEWAY_WS] Received client_payload via WebSocket: {json.dumps(client_payload, indent=2)}")
                 except json.JSONDecodeError:
                     log.error(f"Received invalid JSON from client: {raw_client_message[:100]}")
                     await ws.send_json({"error": "invalid JSON"})
@@ -407,33 +497,58 @@ async def stream_endpoint(ws: WebSocket):
                     )
                     log.info(f"Stored user message to UNIFIED Redis for room {room_id_uuid}, user {user_id_from_jwt}.") # Adjusted log
 
-                    # Relay message to NATS for LLM processing
+                    # Relay message to Temporal dialogue workflow instead of NATS
                     history_for_llm = await load_history(user_id_for_redis=user_id_from_jwt) 
                     log.debug(f"Full history for user '{user_id_from_jwt}': {history_for_llm}")
-                    nats_payload = {
-                        "room_id": str(room_id_uuid), # Ensure it's a string for NATS payload
-                        "user_id": str(user_id_from_jwt), # Ensure it's a string for NATS payload
+                    
+                    # Prepare workflow input data
+                    workflow_input = {
+                        "room_id": str(room_id_uuid),
+                        "user_id": str(user_id_from_jwt),
                         "msg": current_user_message_text,
-                        "messages": history_for_llm,      # Correctly formatted for LLM
+                        "initial_messages": history_for_llm,
                         "model": client_payload.get("model"),
                         "use_document_tools": client_payload.get("use_document_tools", True),
                         "session_auth_token": jwt_raw,
+                        "attachments": client_payload.get("attachments", []),
+                        
+                        # Additional workflow config
+                        "default_persona": os.getenv("DEFAULT_PERSONA", "You are a helpful AI assistant."),
+                        "memory_template": os.getenv("MEMORY_TEMPLATE", "Previous conversation summaries:\\n{memories}"),
+                        "memory_top_n": int(os.getenv("MEMORY_TOP_N", 3)),
+                        
+                        # NATS streaming config for workflow to stream responses back
+                        "nats_url": os.getenv("NATS_URL", "nats://nats:4222"),
+                        "nats_reply_subject": resp_subj,
+                        "nats_ack_subject": ack_subj,
+                        "gateway_api_url": os.getenv("GATEWAY_URL", "http://gateway:8000"),
                     }
                     
-                    log.debug(f"DEBUG: nats_payload['messages'] sent to NATS for user {user_id_from_jwt}, room {room_id_uuid}: {json.dumps(nats_payload['messages'], indent=2, default=str)}") # Add this line
-
-                    headers = { "Ack": ack_subj, "Reply": resp_subj, "Room-Id": str(room_id_uuid), "Auth": jwt_raw } # Ensure Auth header is present
+                    log.debug(f"DEBUG: workflow_input['initial_messages'] sent to Temporal for user {user_id_from_jwt}, room {room_id_uuid}: {json.dumps(workflow_input.get('initial_messages', []), indent=2, default=str)}")
                     
-                    log.info(f"Publishing to NATS: {req_subj}. Payload: {json.dumps(nats_payload, default=str)[:200]}...")
+                    # Log attachments if present
+                    if client_payload.get("attachments"):
+                        log.info(f"[GATEWAY_WS] Included {len(client_payload['attachments'])} attachments in Temporal workflow for room {room_id_uuid}")
+                        for att in client_payload["attachments"]:
+                            if att.get("extracted_text"):
+                                log.info(f"[GATEWAY_WS] Attachment '{att.get('original_filename')}' has extracted_text ({len(att['extracted_text'])} chars)")
+
                     try:
-                        await nc.publish(
-                            req_subj,
-                            json.dumps(nats_payload).encode(),
-                            headers=headers,
+                        # Connect to Temporal and execute workflow
+                        temporal_client = await TemporalClient.connect(TEMPORAL_URL)
+                        
+                        # Start the workflow (fire and forget - it will stream responses back via NATS)
+                        workflow_handle = await temporal_client.start_workflow(
+                            "ChatOrchestrationWorkflow",  # Just the class name, not the method
+                            workflow_input,
+                            id=f"chat-{room_id_uuid}-{datetime.utcnow().isoformat()}",
+                            task_queue=TEMPORAL_TASK_QUEUE,
                         )
-                        log.debug(f"Published to NATS: {req_subj}")
+                        
+                        log.info(f"Started Temporal workflow {workflow_handle.id} for room {room_id_uuid}")
+                        
                     except Exception as e:
-                        log.exception(f"Failed to publish to NATS: {e}")
+                        log.exception(f"Failed to start Temporal workflow: {e}")
                         await ws.send_json({"error": f"Failed to process request: {str(e)}"})
                 
         except WebSocketDisconnect:

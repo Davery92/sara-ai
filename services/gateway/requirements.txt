@@ -17,4 +17,10 @@ websockets>=11.0.0
 python-dotenv>=1.0.0
 psycopg2-binary>=2.9.9
 minio>=7.1.0
+# Text extraction dependencies for immediate file processing
+PyPDF2>=3.0.0
+python-docx>=0.8.11
+
+# Temporal workflow execution
+temporalio>=1.7.0
 

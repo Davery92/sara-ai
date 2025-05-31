@@ -3,27 +3,27 @@
 import { useCallback } from 'react';
 import { useAuth } from '@/context/auth-context';
 import { ChatSDKError, type ErrorCode } from '@/lib/errors';
+import { getApiBaseUrl } from '@/lib/get-api-base-url';
 
 interface AuthenticatedFetchOptions extends RequestInit {
   // We can add specific options if needed in the future
 }
 
 export function useAuthenticatedFetch() {
-  const { accessToken, refreshAuthToken, logout } = useAuth();
+  const { getFreshAccessToken, logout } = useAuth();
 
   const authenticatedFetch = useCallback(
     async (input: RequestInfo | URL, options?: AuthenticatedFetchOptions): Promise<Response> => {
-      let currentToken = accessToken;
-
       // Handle relative and absolute URLs
       let url = input instanceof URL ? input.toString() : input;
       
       // For relative URLs that don't start with http/https, use the base API URL
-      if (typeof url === 'string' && !url.startsWith('http') && !url.startsWith('/')) {
-        const baseApiUrl = process.env.NEXT_PUBLIC_BACKEND_API_URL || '/v1';
-        url = baseApiUrl.startsWith('http') 
-          ? `${baseApiUrl}/${url}` 
-          : `${baseApiUrl}/${url}`;
+      if (typeof url === 'string' && !url.startsWith('http')) {
+        const baseApiUrl = getApiBaseUrl('client');
+        // Remove leading slash from url if present to avoid double slashes
+        const cleanPath = url.startsWith('/') ? url.slice(1) : url;
+        url = `${baseApiUrl}/${cleanPath}`;
+        console.log('AUTHENTICATED_FETCH: Constructed URL:', url);
       }
       
       const makeRequest = async (tokenToUse: string | null): Promise<Response> => {
@@ -40,12 +40,12 @@ export function useAuthenticatedFetch() {
         if (!response.ok) {
           if (response.status === 401 && tokenToUse) {
             console.log('Authenticated fetch received 401. Attempting token refresh...');
-            const newAccessToken = await refreshAuthToken();
+            const newAccessToken = await getFreshAccessToken();
             if (newAccessToken) {
               console.log('Token refreshed successfully. Retrying original request...');
               return makeRequest(newAccessToken); // Retry with the new token
             } else {
-              // Refresh failed, logout would have been called by refreshAuthToken
+              // Refresh failed, logout would have been called by getFreshAccessToken
               // Throw an error to signal the request ultimately failed
               throw new ChatSDKError('unauthorized:auth', 'Session expired or refresh failed.');
             }
@@ -61,9 +61,11 @@ export function useAuthenticatedFetch() {
         return response;
       };
 
-      return makeRequest(currentToken);
+      // Get a fresh token for the initial request
+      const initialToken = await getFreshAccessToken();
+      return makeRequest(initialToken);
     },
-    [accessToken, refreshAuthToken, logout],
+    [getFreshAccessToken, logout],
   );
 
   return { authenticatedFetch };

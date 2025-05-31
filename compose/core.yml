@@ -367,11 +367,11 @@ services:
       - ../.env # For AUTH_SECRET if needed by Next.js server parts
     environment:
       NODE_ENV: development
-      # Client-side will make requests to http://localhost:8000 (or whatever host port gateway is mapped to)
-      NEXT_PUBLIC_BACKEND_API_URL: http://localhost:8000/v1
+      # Client-side will make requests to http://localhost:8000 (base URL, paths will be appended)
+      NEXT_PUBLIC_BACKEND_API_URL: http://localhost:8000
       NEXT_PUBLIC_BACKEND_WS_URL: ws://localhost:8000/v1/stream
-      # Server-side calls from frontend container to gateway container
-      INTERNAL_BACKEND_API_URL: http://gateway:8000 # This remains the same for container-to-container
+      # Server-side calls from frontend container to gateway container (base URL)
+      INTERNAL_BACKEND_API_URL: http://gateway:8000
     depends_on:
       gateway: { condition: service_started }
 
